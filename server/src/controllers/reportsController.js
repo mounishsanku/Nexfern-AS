@@ -1,5 +1,6 @@
 const Invoice = require("../models/Invoice");
 const Expense = require("../models/Expense");
+const { sendStructuredError, ACTION } = require("../utils/httpErrorResponse");
 
 function parseYMDToUTCDate(ymd) {
   if (typeof ymd !== "string") return null;
@@ -19,7 +20,7 @@ async function getReports(_req, res) {
     const { startDate, endDate } = _req.query ?? {};
 
     const invoiceFilter = {};
-    const expenseFilter = {};
+    const expenseFilter = { status: "approved" };
 
     const start = parseYMDToUTCDate(startDate);
     const end = parseYMDToUTCDate(endDate);
@@ -73,7 +74,11 @@ async function getReports(_req, res) {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error(err);
-    return res.status(500).json({ message: "server error" });
+    return sendStructuredError(res, {
+      code: "REPORT_FAILED",
+      message: "Something went wrong",
+      action: ACTION.RETRY,
+    });
   }
 }
 
@@ -158,9 +163,215 @@ async function getGstReport(req, res) {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error(err);
-    return res.status(500).json({ message: "server error" });
+    return sendStructuredError(res, {
+      code: "GST_REPORT_FAILED",
+      message: "Something went wrong",
+      action: ACTION.RETRY,
+    });
   }
 }
 
-// GST Export helpers (reuse parseYMDToUTCDate)\n\nfunction formatDateYMD(date) {\n  if (!date || !(date instanceof Date)) return '';\n  const year = date.getUTCFullYear();\n  const month = String(date.getUTCMonth() + 1).padStart(2, '0');\n  const day = String(date.getUTCDate()).padStart(2, '0');\n  return `${year}-${month}-${day}`;\n}\n\nfunction round2(num) {\n  return Number.isFinite(Number(num)) ? Number(Number(num).toFixed(2)) : 0;\n}\n\nasync function buildInvoicesData(filter) {\n  const invoices = await Invoice.find(filter)\n    .populate('customer', 'name')\n    .sort({ createdAt: -1 })\n    .lean();\n\n  let totalSales = 0;\n  let totalTax = 0;\n\n  const processedInvoices = invoices.map(inv => {\n    const taxableValue = round2(inv.amount);\n    const cgst = round2(inv.cgst);\n    const sgst = round2(inv.sgst);\n    const igst = round2(inv.igst);\n    const totalAmount = round2(inv.totalAmount);\n\n    totalSales += taxableValue;\n    totalTax += cgst + sgst + igst;\n\n    return {\n      invoiceNumber: inv.invoiceNumber || inv._id.toString(),\n      date: formatDateYMD(inv.createdAt),\n      customerName: inv.customer?.name || 'Unknown',\n      gstType: inv.gstType || '',\n      taxableValue,\n      cgst,\n      sgst,\n      igst,\n      totalAmount\n    };\n  });\n\n  return {\n    invoices: processedInvoices,\n    totalSales: round2(totalSales),\n    totalTax: round2(totalTax)\n  };\n}\n\n// GSTR-1 JSON\nasync function exportGstr1(req, res) {\n  try {\n    const { financialYearId, startDate, endDate } = req.query ?? {};\n\n    const filter = {};\n    if (financialYearId) {\n      filter.financialYearId = financialYearId;\n    } else if (startDate || endDate) {\n      const createdAtFilter = {};\n      const start = parseYMDToUTCDate(startDate);\n      const end = parseYMDToUTCDate(endDate);\n      if (start) createdAtFilter.$gte = start;\n      if (end) {\n        createdAtFilter.$lte = new Date(\n          Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate(), 23, 59, 59, 999)\n        );\n      }\n      filter.createdAt = createdAtFilter;\n    }\n\n    const data = await buildInvoicesData(filter);\n    res.json(data);\n  } catch (err) {\n    console.error(err);\n    res.status(500).json({ message: 'Server error' });\n  }\n}\n\n// GSTR-3B JSON\nasync function exportGstr3b(req, res) {\n  try {\n    const filter = {}; // same filter logic as above\n    if (req.query.financialYearId) {\n      filter.financialYearId = req.query.financialYearId;\n    } else if (req.query.startDate || req.query.endDate) {\n      const createdAtFilter = {};\n      const start = parseYMDToUTCDate(req.query.startDate);\n      const end = parseYMDToUTCDate(req.query.endDate);\n      if (start) createdAtFilter.$gte = start;\n      if (end) {\n        createdAtFilter.$lte = new Date(\n          Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate(), 23, 59, 59, 999)\n        );\n      }\n      filter.createdAt = createdAtFilter;\n    }\n\n    const { totalTax: outwardTax } = await buildInvoicesData(filter);\n    const inwardTax = 0;\n    const netPayable = round2(outwardTax - inwardTax);\n\n    res.json({\n      outwardTax: round2(outwardTax),\n      inwardTax,\n      netPayable\n    });\n  } catch (err) {\n    console.error(err);\n    res.status(500).json({ message: 'Server error' });\n  }\n}\n\n// CSV helpers\nfunction jsonToCsv(jsonData, headers) {\n  const rows = [headers.join(',')];\n  jsonData.forEach(row => {\n    rows.push(headers.map(h => JSON.stringify(row[h] || '').slice(1, -1).replace(/\\n/g, ' ')).join(','));\n  });\n  return rows.join('\\n');\n}\n\n// GSTR-1 CSV\nasync function exportGstr1Csv(req, res) {\n  try {\n    const data = await buildInvoicesData(req.query);\n    const headers = ['invoiceNumber', 'date', 'customerName', 'gstType', 'taxableValue', 'cgst', 'sgst', 'igst', 'totalAmount'];\n    const csv = jsonToCsv(data.invoices, headers);\n    res.set({\n      'Content-Type': 'text/csv',\n      'Content-Disposition': 'attachment; filename=\\"GSTR1.csv\\"' \n    });\n    res.send(csv);\n  } catch (err) {\n    console.error(err);\n    res.status(500).json({ message: 'Server error' });\n  }\n}\n\n// GSTR-3B CSV\nasync function exportGstr3bCsv(req, res) {\n  try {\n    const { totalTax: outwardTax } = await buildInvoicesData(req.query);\n    const inwardTax = 0;\n    const netPayable = round2(outwardTax - inwardTax);\n    const data = [{ outwardTax: round2(outwardTax), inwardTax, netPayable }];\n    const headers = ['outwardTax', 'inwardTax', 'netPayable'];\n    const csv = jsonToCsv(data, headers);\n    res.set({\n      'Content-Type': 'text/csv',\n      'Content-Disposition': 'attachment; filename=\\"GSTR3B.csv\\"' \n    });\n    res.send(csv);\n  } catch (err) {\n    console.error(err);\n    res.status(500).json({ message: 'Server error' });\n  }\n}\n\nmodule.exports = { getReports, getGstReport, exportGstr1, exportGstr3b, exportGstr1Csv, exportGstr3bCsv };
+// GST Export helpers (reuse parseYMDToUTCDate)
+function formatDateYMD(date) {
+  if (!date || !(date instanceof Date)) return "";
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function round2(num) {
+  const n = Number(num);
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
+}
+
+function buildGstFilter(query = {}) {
+  const { financialYearId, startDate, endDate } = query;
+  const filter = {};
+
+  if (financialYearId) {
+    filter.financialYearId = financialYearId;
+    return filter;
+  }
+
+  if (startDate || endDate) {
+    const createdAtFilter = {};
+    const start = parseYMDToUTCDate(startDate);
+    const end = parseYMDToUTCDate(endDate);
+    if (start) createdAtFilter.$gte = start;
+    if (end) {
+      createdAtFilter.$lte = new Date(
+        Date.UTC(
+          end.getUTCFullYear(),
+          end.getUTCMonth(),
+          end.getUTCDate(),
+          23,
+          59,
+          59,
+          999,
+        ),
+      );
+    }
+    filter.createdAt = createdAtFilter;
+  }
+
+  return filter;
+}
+
+async function buildInvoicesData(filter) {
+  const invoices = await Invoice.find(filter)
+    .populate("customer", "name")
+    .sort({ createdAt: -1 })
+    .lean();
+
+  let totalSales = 0;
+  let totalTax = 0;
+
+  const processedInvoices = invoices.map((inv) => {
+    const taxableValue = round2(inv.amount);
+    const cgst = round2(inv.cgst);
+    const sgst = round2(inv.sgst);
+    const igst = round2(inv.igst);
+    const totalAmount = round2(inv.totalAmount);
+
+    totalSales += taxableValue;
+    totalTax += cgst + sgst + igst;
+
+    return {
+      invoiceNumber: inv.invoiceNumber || inv._id.toString(),
+      date: formatDateYMD(inv.createdAt),
+      customerName: inv.customer?.name || "Unknown",
+      gstType: inv.gstType || "",
+      taxableValue,
+      cgst,
+      sgst,
+      igst,
+      totalAmount,
+    };
+  });
+
+  return {
+    invoices: processedInvoices,
+    totalSales: round2(totalSales),
+    totalTax: round2(totalTax),
+  };
+}
+
+// GSTR-1 JSON
+async function exportGstr1(req, res) {
+  try {
+    const filter = buildGstFilter(req.query ?? {});
+    const data = await buildInvoicesData(filter);
+    res.json(data);
+  } catch (err) {
+    console.error(err);
+    return sendStructuredError(res, {
+      code: "GST_EXPORT_FAILED",
+      message: "Something went wrong",
+      action: ACTION.RETRY,
+    });
+  }
+}
+
+// GSTR-3B JSON
+async function exportGstr3b(req, res) {
+  try {
+    const filter = buildGstFilter(req.query ?? {});
+    const { totalTax: outwardTax } = await buildInvoicesData(filter);
+    const inwardTax = 0;
+    const netPayable = round2(outwardTax - inwardTax);
+
+    res.json({
+      outwardTax: round2(outwardTax),
+      inwardTax,
+      netPayable,
+    });
+  } catch (err) {
+    console.error(err);
+    return sendStructuredError(res, {
+      code: "GST_EXPORT_FAILED",
+      message: "Something went wrong",
+      action: ACTION.RETRY,
+    });
+  }
+}
+
+// CSV helpers
+function jsonToCsv(jsonData, headers) {
+  const rows = [headers.join(",")];
+  jsonData.forEach((row) => {
+    rows.push(
+      headers
+        .map((h) => JSON.stringify(row[h] || "").slice(1, -1).replace(/\n/g, " "))
+        .join(","),
+    );
+  });
+  return rows.join("\n");
+}
+
+// GSTR-1 CSV
+async function exportGstr1Csv(req, res) {
+  try {
+    const filter = buildGstFilter(req.query ?? {});
+    const data = await buildInvoicesData(filter);
+    const headers = [
+      "invoiceNumber",
+      "date",
+      "customerName",
+      "gstType",
+      "taxableValue",
+      "cgst",
+      "sgst",
+      "igst",
+      "totalAmount",
+    ];
+    const csv = jsonToCsv(data.invoices, headers);
+    res.set({
+      "Content-Type": "text/csv",
+      "Content-Disposition": 'attachment; filename="GSTR1.csv"',
+    });
+    res.send(csv);
+  } catch (err) {
+    console.error(err);
+    return sendStructuredError(res, {
+      code: "GST_EXPORT_FAILED",
+      message: "Something went wrong",
+      action: ACTION.RETRY,
+    });
+  }
+}
+
+// GSTR-3B CSV
+async function exportGstr3bCsv(req, res) {
+  try {
+    const filter = buildGstFilter(req.query ?? {});
+    const { totalTax: outwardTax } = await buildInvoicesData(filter);
+    const inwardTax = 0;
+    const netPayable = round2(outwardTax - inwardTax);
+    const data = [{ outwardTax: round2(outwardTax), inwardTax, netPayable }];
+    const headers = ["outwardTax", "inwardTax", "netPayable"];
+    const csv = jsonToCsv(data, headers);
+    res.set({
+      "Content-Type": "text/csv",
+      "Content-Disposition": 'attachment; filename="GSTR3B.csv"',
+    });
+    res.send(csv);
+  } catch (err) {
+    console.error(err);
+    return sendStructuredError(res, {
+      code: "GST_EXPORT_FAILED",
+      message: "Something went wrong",
+      action: ACTION.RETRY,
+    });
+  }
+}
+
+module.exports = {
+  getReports,
+  getGstReport,
+  exportGstr1,
+  exportGstr3b,
+  exportGstr1Csv,
+  exportGstr3bCsv,
+};
 

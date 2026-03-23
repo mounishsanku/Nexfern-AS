@@ -6,7 +6,10 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "reset:financial": "node scripts/resetFinancialData.js",
+    "seed:accounting-demo": "node scripts/seedCleanAccountingDemo.js",
+    "test:financial-scenarios": "node scripts/financialScenarioTests.js"
   },
   "dependencies": {
     "next": "16.2.0",
