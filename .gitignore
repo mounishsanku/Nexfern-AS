@@ -1,41 +1,55 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# ─── Dependencies ────────────────────────────────────────────────────────────
+node_modules/
+.pnp
+.pnp.js
 
-# dependencies
-/node_modules
-/.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
+# ─── Build Outputs ───────────────────────────────────────────────────────────
+dist/
+build/
+out/
+.next/
+.nuxt/
 
-# testing
-/coverage
+# ─── Cache Directories ───────────────────────────────────────────────────────
+.cache/
+.parcel-cache/
+.turbo/
+.eslintcache
+*.tsbuildinfo
 
-# next.js
-/.next/
-/out/
+# ─── Environment / Secrets ───────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
 
-# production
-/build
-
-# misc
-.DS_Store
-*.pem
-
-# debug
+# ─── Logs ────────────────────────────────────────────────────────────────────
+logs/
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-.pnpm-debug.log*
+pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-.env*
+# ─── OS Artifacts ────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
 
-# vercel
-.vercel
+# ─── Editor / IDE ────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 
-# typescript
-*.tsbuildinfo
-next-env.d.ts
+# ─── Testing ─────────────────────────────────────────────────────────────────
+coverage/
+.nyc_output/
+
+# ─── Misc ────────────────────────────────────────────────────────────────────
+*.pem
+*.key
