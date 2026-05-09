@@ -6,6 +6,7 @@
 const Voucher = require("../models/Voucher");
 const BankAccount = require("../models/BankAccount");
 const { buildAccountMap, round } = require("../controllers/reportController");
+const LocalizationRegistry = require("../localization/registry/LocalizationRegistry");
 
 const BANK_GL_EPS = 1;
 const BS_EPS = 0.02;
@@ -36,7 +37,7 @@ function balanceSheetGapFromMap(map) {
       else oa += row.balance;
     }
     if (row.type === "liability") {
-      if (row.account === "GST Payable") gstPay = -row.balance;
+      if (row.account === LocalizationRegistry.getTaxLiabilityAccount()) gstPay = -row.balance;
       else oliab += -row.balance;
     }
     if (row.type === "equity") re += -row.balance;

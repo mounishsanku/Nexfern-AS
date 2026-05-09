@@ -55,6 +55,12 @@ const voucherSchema = new mongoose.Schema(
       ref: "Voucher",
       default: null,
     },
+    entityId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Entity",
+      index: true,
+      default: null,
+    },
   },
   { timestamps: true },
 );

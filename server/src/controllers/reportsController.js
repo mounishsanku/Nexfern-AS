@@ -373,5 +373,6 @@ module.exports = {
   exportGstr3b,
   exportGstr1Csv,
   exportGstr3bCsv,
+  buildGstFilter,
+  buildInvoicesData,
 };
-

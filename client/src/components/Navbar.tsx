@@ -3,7 +3,8 @@ import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/Button";
 import { Container } from "@/components/ui/Container";
 import { ConfirmModal } from "@/components/ui/Modal";
-import { getStoredRole, hasStoredPermission, type Role } from "@/components/RoleProtectedRoute";
+import type { Role } from "@/types/role";
+import { getStoredRole, hasStoredPermission } from "@/utils/roleAuth";
 
 function cx(...parts: Array<string | undefined | false>) {
   return parts.filter(Boolean).join(" ");
@@ -24,6 +25,7 @@ const navGroupsByRole: Record<Role, NavItem[][]> = {
       { to: "/opening-balances", label: "Opening" },
       { to: "/vouchers", label: "Vouchers" },
       { to: "/bank-reconciliation", label: "Bank recon" },
+      { to: "/gst-reconciliation", label: "GST recon" },
     ],
     [
       { to: "/reports", label: "Reports" },
@@ -46,6 +48,7 @@ const navGroupsByRole: Record<Role, NavItem[][]> = {
       { to: "/opening-balances", label: "Opening" },
       { to: "/vouchers", label: "Vouchers" },
       { to: "/bank-reconciliation", label: "Bank recon" },
+      { to: "/gst-reconciliation", label: "GST recon" },
     ],
     [
       { to: "/reports", label: "Reports" },

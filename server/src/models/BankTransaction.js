@@ -29,6 +29,12 @@ const bankTransactionSchema = new mongoose.Schema(
     date: { type: Date, default: Date.now },
     isMatched: { type: Boolean, default: false },
     isReconciled: { type: Boolean, default: false },
+    entityId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Entity",
+      index: true,
+      default: null,
+    },
   },
   { timestamps: false },
 );

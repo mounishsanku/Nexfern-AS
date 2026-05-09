@@ -16,6 +16,12 @@ const userSchema = new mongoose.Schema(
       enum: ["admin", "accountant", "receptionist", "auditor", "user"],
       default: "user",
     },
+    // Enterprise Security Hardening Foundation
+    mfaEnabled: { type: Boolean, default: false },
+    mfaSecret: { type: String, select: false },
+    backupCodes: [{ type: String, select: false }],
+    lastLoginAt: { type: Date },
+    lastPasswordChangeAt: { type: Date },
   },
   { timestamps: true }
 );

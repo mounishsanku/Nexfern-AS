@@ -24,24 +24,28 @@ async function recognizeRevenue(req, res) {
       });
     }
 
+    const activeYearDoc = await mongoose.model("FinancialYear").findById(financialYearId).lean();
+    if (!activeYearDoc) throw new Error("Active financial year not found");
+
     const today = new Date();
     today.setHours(23, 59, 59, 999);
+    const endDate = new Date(Math.min(today.getTime(), new Date(activeYearDoc.endDate).getTime()));
 
     const dueSchedules = await RevenueSchedule.find({
       isRecognized: false,
-      date: { $lte: today },
+      date: { $gte: activeYearDoc.startDate, $lte: endDate },
     })
       .sort({ date: 1 })
       .lean();
 
     if (dueSchedules.length === 0) {
       return res.status(404).json({
-        message: "No due revenue schedules to recognize",
+        message: "No due revenue schedules to recognize in the active financial year",
         code: "NO_DUE_REVENUE_SCHEDULES",
       });
     }
 
-    const totalAmount = dueSchedules.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+    const totalAmount = dueSchedules.reduce((s, r) => s + Math.round((Number(r.amount) || 0) * 100), 0) / 100;
 
     const { voucherIds, financialYearId: fyId } = await resolveFilter({ financialYearId });
     const map = await buildAccountMap(voucherIds, fyId);
@@ -72,7 +76,7 @@ async function recognizeRevenue(req, res) {
       if (!inv) continue;
       const invScheduleAmount = dueSchedules
         .filter((s) => String(s.invoiceId) === invId)
-        .reduce((s, r) => s + (Number(r.amount) || 0), 0);
+        .reduce((s, r) => s + Math.round((Number(r.amount) || 0) * 100), 0) / 100;
       const available = Number(inv.amount) - (Number(inv.recognizedRevenue) || 0);
       if (invScheduleAmount > available + 0.01) {
         return res.status(400).json({
@@ -109,7 +113,7 @@ async function recognizeRevenue(req, res) {
         );
         for (const invId of invoiceIds) {
           const invSchedules = dueSchedules.filter((s) => String(s.invoiceId) === invId);
-          const invAmount = invSchedules.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+          const invAmount = invSchedules.reduce((s, r) => s + Math.round((Number(r.amount) || 0) * 100), 0) / 100;
           await Invoice.updateOne(
             { _id: invId },
             { $inc: { recognizedRevenue: invAmount } },

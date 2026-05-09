@@ -43,10 +43,16 @@ async function preTransactionGuard(req, res, next) {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("preTransactionGuard:", err);
+
+    let message = `Operation failed. Please contact support with error code ${err.code || 'SYS_ERR'}.`;
+    if (err.code === 'INVALID_SYSTEM_STATE') {
+      message = "Critical accounting state invalid. Please run system diagnostics.";
+    }
+
     return sendStructuredError(res, {
       status: 503,
-      code: "PRECHECK_FAILED",
-      message: "Pre-check failed. Try again shortly.",
+      code: err.code || "PRECHECK_FAILED",
+      message,
       action: ACTION.RETRY,
     });
   }

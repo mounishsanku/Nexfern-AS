@@ -64,6 +64,175 @@ async function removeExpenseVoucherChain(expenseId) {
 }
 
 // ---------------------------------------------------------------------------
+// CORE ABSTRACTION FOR IMPORTS
+// ---------------------------------------------------------------------------
+
+async function createExpenseFromData({
+  userId,
+  title,
+  amount,
+  category,
+  vendorId,
+  attachmentUrl,
+  billUrl,
+  date, // Date object expected
+  bankAccountId,
+  isRecurring,
+  recurringInterval,
+  tdsApplicable,
+  tdsRate,
+  department,
+  financialYearId,
+  isApprover = false,
+  autoApprove = false, // If true, immediately posts voucher
+  parentSession = null,
+}) {
+  if (!title || typeof title !== "string" || !title.trim()) {
+    throw new Error("title is required");
+  }
+  if (!category || typeof category !== "string" || !category.trim()) {
+    throw new Error("category is required");
+  }
+  const parsedAmount = toFiniteNumber(amount);
+  if (parsedAmount === null || parsedAmount <= 0) {
+    throw new Error("amount must be a valid number > 0");
+  }
+
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    throw new Error("date is required and must be a valid Date object");
+  }
+
+  if (vendorId !== undefined && vendorId !== null && vendorId !== "") {
+    if (!mongoose.Types.ObjectId.isValid(String(vendorId))) {
+      throw new Error("invalid vendorId");
+    }
+  }
+
+  if (!financialYearId) {
+    throw new Error("Active financial year is required");
+  }
+
+  const recurring = Boolean(isRecurring);
+  const interval = recurring && recurringInterval === "monthly" ? "monthly" : null;
+  if (recurring && !isApprover) {
+    throw new Error("Only accountant or admin can create recurring expense templates");
+  }
+
+  const tdsOn = Boolean(tdsApplicable);
+  const parsedTdsRate = tdsOn ? toFiniteNumber(tdsRate) : 0;
+  if (tdsOn && (parsedTdsRate === null || parsedTdsRate < 0 || parsedTdsRate > 30)) {
+    throw new Error("tdsRate must be between 0 and 30");
+  }
+  const computedTdsAmount = tdsOn ? round2((parsedAmount * parsedTdsRate) / 100) : 0;
+
+  const normalizedDepartment = normalizeDepartment(department) || "tech";
+
+  const bankRef = bankAccountId && mongoose.Types.ObjectId.isValid(String(bankAccountId)) ? bankAccountId : null;
+
+  const basePayload = {
+    title: title.trim(),
+    amount: parsedAmount,
+    category: category.trim().toLowerCase(),
+    department: normalizedDepartment,
+    vendorId: vendorId && mongoose.Types.ObjectId.isValid(String(vendorId)) ? vendorId : null,
+    attachmentUrl: attachmentUrl || null,
+    billUrl: billUrl || attachmentUrl || null,
+    date,
+    financialYearId,
+    isRecurring: recurring,
+    recurringInterval: interval,
+    tdsApplicable: tdsOn,
+    tdsRate: tdsOn ? parsedTdsRate : 0,
+    tdsAmount: computedTdsAmount,
+    bankAccountId: bankRef,
+    createdAt: new Date(),
+  };
+
+  const isOwnedSession = !parentSession;
+  const session = parentSession || await mongoose.startSession();
+  let createdExpense = null;
+
+  const coreLogic = async () => {
+    [createdExpense] = await Expense.create([
+        {
+          ...basePayload,
+          status: autoApprove ? "approved" : "pending",
+          approvedBy: autoApprove ? userId : null,
+          approvedAt: autoApprove ? new Date() : null,
+        }
+      ], { session });
+
+      if (autoApprove) {
+        const gross = Number(createdExpense.amount) || 0;
+        const tdsAmt = tdsOn ? Number(createdExpense.tdsAmount) || 0 : 0;
+        const netAmount = round2(gross - tdsAmt);
+
+        let usesBankWallet = false;
+        if (bankRef) {
+          const ba = await BankAccount.findById(bankRef).select("name").session(session).lean();
+          usesBankWallet = Boolean(ba && ba.name !== "Cash");
+        }
+
+        await ensureExpenseVoucherAccounts({
+          category: createdExpense.category,
+          tdsApplicable: tdsOn,
+          tdsAmount: tdsAmt,
+          usesBankWallet,
+        });
+
+        const cashOut = tdsOn ? netAmount : gross;
+
+        await createVoucherForExpense({
+          expense: createdExpense,
+          financialYearId,
+          session,
+          bankAccountId: bankRef ?? null,
+        });
+
+        await recordBankTransaction({
+          bankAccountId: bankRef ?? null,
+          type: "debit",
+          amount: cashOut,
+          referenceType: "expense",
+          referenceId: createdExpense._id,
+          session,
+        });
+        
+        await assertPostTransactionAccountingInvariants(financialYearId, session);
+      }
+  };
+
+  try {
+    if (isOwnedSession) {
+      await session.withTransaction(coreLogic);
+    } else {
+      await coreLogic();
+    }
+  } catch (txErr) {
+    throw txErr;
+  } finally {
+    if (isOwnedSession) {
+      await session.endSession();
+    }
+  }
+
+  await logAction(userId, ACTIONS.CREATE, "expense", createdExpense._id, buildMetadata(null, {
+    title: createdExpense.title,
+    amount: createdExpense.amount,
+    category: createdExpense.category,
+    status: autoApprove ? "approved" : "pending",
+    vendorId: createdExpense.vendorId?.toString?.(),
+    isRecurring: createdExpense.isRecurring,
+    tdsApplicable: createdExpense.tdsApplicable,
+    tdsRate: createdExpense.tdsRate,
+    tdsAmount: createdExpense.tdsAmount,
+    department: createdExpense.department,
+  }));
+
+  return createdExpense;
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/expenses
 // ---------------------------------------------------------------------------
 
@@ -109,60 +278,25 @@ async function createExpense(req, res) {
     const financialYearId = req.activeYear?._id ?? null;
     await validateAndHealBeforeTransaction(financialYearId);
 
-    const recurring = Boolean(isRecurring);
-    const interval  = recurring && recurringInterval === "monthly" ? "monthly" : null;
-    if (recurring && !isApprover) {
-      return res.status(400).json({
-        message: "Only accountant or admin can create recurring expense templates",
-        code: "EXPENSE_RECURRING_NOT_ALLOWED",
-      });
-    }
-
-    const tdsOn = Boolean(tdsApplicable);
-    const parsedTdsRate = tdsOn ? toFiniteNumber(tdsRate) : 0;
-    if (tdsOn && (parsedTdsRate === null || parsedTdsRate < 0 || parsedTdsRate > 30)) {
-      return res.status(400).json({ message: "tdsRate must be between 0 and 30", code: "EXPENSE_TDS_RATE_INVALID" });
-    }
-    const computedTdsAmount = tdsOn ? round2((parsedAmount * parsedTdsRate) / 100) : 0;
-
-    const normalizedDepartment = normalizeDepartment(department) || "tech";
-
-    const bankRef =
-      bankAccountId && mongoose.Types.ObjectId.isValid(String(bankAccountId)) ? bankAccountId : null;
-
-    const basePayload = {
-      title:             title.trim(),
-      amount:            parsedAmount,
-      category:          category.trim().toLowerCase(),
-      department:        normalizedDepartment,
-      vendorId:          vendorId && mongoose.Types.ObjectId.isValid(String(vendorId)) ? vendorId : null,
-      attachmentUrl:     attachmentUrl || null,
-      billUrl:           billUrl || attachmentUrl || null,
-      date:              expenseDate,
+    const created = await createExpenseFromData({
+      userId,
+      title,
+      amount,
+      category,
+      vendorId,
+      attachmentUrl,
+      billUrl,
+      date: expenseDate,
+      bankAccountId,
+      isRecurring,
+      recurringInterval,
+      tdsApplicable,
+      tdsRate,
+      department,
       financialYearId,
-      isRecurring:       recurring,
-      recurringInterval: interval,
-      tdsApplicable:     tdsOn,
-      tdsRate:           tdsOn ? parsedTdsRate : 0,
-      tdsAmount:         computedTdsAmount,
-      bankAccountId:     bankRef,
-      createdAt:         new Date(),
-    };
-
-    const created = await Expense.create({
-      ...basePayload,
-      status:     "pending",
-      approvedBy: null,
-      approvedAt: null,
+      isApprover,
+      autoApprove: false,
     });
-
-    await logAction(userId, ACTIONS.CREATE, "expense", created._id, buildMetadata(null, {
-      title: created.title, amount: created.amount, category: created.category,
-      status: "pending",
-      vendorId: created.vendorId?.toString?.(), isRecurring: created.isRecurring,
-      tdsApplicable: created.tdsApplicable, tdsRate: created.tdsRate, tdsAmount: created.tdsAmount,
-      department: created.department,
-    }));
 
     const populated = await Expense.findById(created._id).populate("vendorId", "name").lean();
     return res.status(201).json(populated);
@@ -655,6 +789,7 @@ async function deleteExpense(req, res) {
 
 module.exports = {
   createExpense,
+  createExpenseFromData,
   getExpenses,
   uploadAttachment,
   runRecurring,

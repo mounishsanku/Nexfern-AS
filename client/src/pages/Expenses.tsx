@@ -1,7 +1,7 @@
 import * as React from "react";
-import { apiFetch, apiUpload, API, getStoredToken } from "@/api";
+import { apiFetch, apiUpload, getApiBase, getStoredToken } from "@/api";
 
-const BASE = API.replace("/api", "");
+const BASE = getApiBase().replace(/\/api$/, "");
 import { Button } from "@/components/ui/Button";
 import { Container } from "@/components/ui/Container";
 import { Badge } from "@/components/ui/Badge";
@@ -9,9 +9,10 @@ import { ErrorMessage } from "@/components/ui/ErrorMessage";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ConfirmModal } from "@/components/ui/Modal";
 import { Skeleton } from "@/components/ui/Skeleton";
-import { VirtualizedTable, type VirtualTableColumn } from "@/components/VirtualizedTable";
+import { VirtualizedTable } from "@/components/VirtualizedTable";
+import type { VirtualTableColumn } from "@/types/virtualizedTable";
 import { formatCurrency } from "@/lib/format";
-import { useToast } from "@/context/ToastContext";
+import { useToast } from "@/context/useToast";
 import { useFirstFieldFocus, createFormEnterSubmitHandler } from "@/hooks/useFormEnhancements";
 
 const CATEGORIES = ["rent", "salary", "marketing", "tools", "utilities", "travel", "other"];
@@ -137,7 +138,7 @@ function ExpensesInner() {
         err.code === "API_SERVER_UNREACHABLE" || msg.includes("API_SERVER_UNREACHABLE");
       setError(
         unreachable
-          ? `Cannot reach the API server. Start the backend (port 5000), or use VITE_USE_PROXY=1 (Vite proxy). Current API base: ${API || "(empty)"}`
+          ? `Cannot reach the API server. Start the backend (port 5000), or use VITE_USE_PROXY=1 (Vite proxy). Current API base: ${getApiBase() || "(empty)"}`
           : msg,
       );
     } finally {

@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { ErrorMessage } from "@/components/ui/ErrorMessage";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { inputClassName } from "@/components/ui/Input";
+import { inputClassName } from "@/constants/inputStyles";
 import { formatCurrency } from "@/lib/format";
 
 type UploadRow = {
@@ -96,6 +96,10 @@ export function BankReconciliation() {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
+      // - [x] P1: Fix setup/config blockers
+      // - [x] Update `securityValidationService.js` to check for GSTIN/NIC e-invoice credentials.
+      // - [x] Add System Readiness card to `Dashboard.tsx`.
+      // - [/] P2: Improve financial clarity
       setBusy(false);
     }
   }
@@ -130,6 +134,47 @@ export function BankReconciliation() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function handleCsvUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const text = String(reader.result);
+        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+        if (lines.length < 2) throw new Error("CSV must have headers and at least one row");
+        
+        const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+        const rows: UploadRow[] = [];
+        
+        const dIdx = headers.indexOf('date');
+        const descIdx = headers.indexOf('description');
+        const aIdx = headers.indexOf('amount');
+        const tIdx = headers.indexOf('type');
+        
+        if (dIdx === -1 || descIdx === -1 || aIdx === -1 || tIdx === -1) {
+          throw new Error("CSV must have headers: date, description, amount, type");
+        }
+
+        for (let i = 1; i < lines.length; i++) {
+          const cols = lines[i].split(',').map(c => c.trim());
+          if (cols.length < 4) continue;
+          rows.push({
+            date: cols[dIdx],
+            description: cols[descIdx],
+            amount: parseFloat(cols[aIdx]),
+            type: cols[tIdx].toLowerCase() as "credit" | "debit"
+          });
+        }
+        setPayload(JSON.stringify(rows, null, 2));
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to parse CSV");
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = ''; // reset
   }
 
   const fromT = filterFrom ? parseDay(filterFrom) : null;
@@ -217,15 +262,29 @@ export function BankReconciliation() {
       </div>
 
       <div className="mt-4 rounded-2xl bg-white p-4 shadow-soft ring-1 ring-inset ring-slate-200">
-        <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Statement JSON</div>
-        <textarea
-          value={payload}
-          onChange={(e) => setPayload(e.target.value)}
-          className="mt-2 h-28 w-full rounded-xl border border-slate-200 p-3 font-mono text-xs text-slate-800"
-        />
+        <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Statement Upload</div>
+        <p className="text-xs text-slate-500 mt-1 mb-2">Upload a CSV with columns: <b>date, description, amount, type</b></p>
+        
+        <label className="flex cursor-pointer items-center justify-center rounded-xl border-2 border-dashed border-slate-200 p-6 transition-colors hover:border-primary/50 hover:bg-slate-50 mb-3">
+          <div className="text-center">
+            <span className="text-2xl mb-2 block">📄</span>
+            <span className="text-sm font-semibold text-primary">Browse CSV file</span>
+            <input type="file" accept=".csv" className="sr-only" onChange={handleCsvUpload} />
+          </div>
+        </label>
+        
+        <details className="mt-2 text-xs">
+          <summary className="cursor-pointer text-slate-500 font-semibold mb-2">Advanced: Edit JSON manually</summary>
+          <textarea
+            value={payload}
+            onChange={(e) => setPayload(e.target.value)}
+            className="h-28 w-full rounded-xl border border-slate-200 p-3 font-mono text-xs text-slate-800"
+          />
+        </details>
+
         <div className="mt-3 flex flex-wrap gap-2">
-          <Button variant="secondary" onClick={upload} disabled={busy}>
-            Upload
+          <Button variant="secondary" onClick={upload} disabled={busy || payload === '[]'}>
+            Upload Statement
           </Button>
           <Button variant="primary" onClick={reconcile} disabled={busy}>
             {busy ? "Working…" : "Run reconcile"}

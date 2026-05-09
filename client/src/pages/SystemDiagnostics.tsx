@@ -3,7 +3,7 @@ import { apiFetch, getStoredToken, downloadJsonBackup } from "@/api";
 import { Button } from "@/components/ui/Button";
 import { Container } from "@/components/ui/Container";
 import { Card } from "@/components/ui/Card";
-import { useToast } from "@/context/ToastContext";
+import { useToast } from "@/context/useToast";
 
 type Issue = {
   module: string;

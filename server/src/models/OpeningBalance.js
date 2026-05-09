@@ -41,7 +41,8 @@ openingBalanceSchema.pre("save", function preSaveOpening(next) {
   this.debitAmount = d;
   this.creditAmount = c;
   this.amount = Math.round((d - c) * 100) / 100;
-  next();
+  // Mongoose hook compatibility: some versions call pre middleware without `next`.
+  if (typeof next === "function") next();
 });
 
 // One opening balance per account per year

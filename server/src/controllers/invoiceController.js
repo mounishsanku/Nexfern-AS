@@ -1,6 +1,10 @@
 const Invoice = require("../models/Invoice");
 const Payment = require("../models/Payment");
 const RevenueSchedule = require("../models/RevenueSchedule");
+const CompanySettings = require("../models/CompanySettings");
+const Entity = require("../models/Entity");
+const LocalizationRegistry = require("../localization/registry/LocalizationRegistry");
+const { normalizeTaxResult } = require("../localization/utils/normalizeTaxResult");
 const mongoose = require("mongoose");
 const { logAction, buildMetadata, ACTIONS } = require("../utils/audit");
 const PDFDocument = require("pdfkit");
@@ -10,6 +14,7 @@ const {
 } = require("../services/voucherService");
 const { allocateNextInvoiceNumber } = require("../services/invoiceNumberService");
 const { streamInvoicePdf } = require("../utils/invoicePdf");
+const gstnEinvService = require("../services/gstnEinvService");
 const {
   normalizeDepartment,
   defaultDepartmentFromRevenueType,
@@ -39,6 +44,9 @@ async function createInvoiceFromData({
   batchStudentId = null,
   department = null,
   financialYearId = null,
+  entityId = null,
+  currency = null,
+  parentSession = null,
 }) {
   if (!customerId || typeof customerId !== "string") {
     throw new Error("customerId is required");
@@ -82,29 +90,103 @@ async function createInvoiceFromData({
     throw new Error("deferredMonths must be at least 1 when isDeferred is true");
   }
 
-  let cgst = 0, sgst = 0, igst = 0;
-  if (parsedRate > 0) {
-    if (normalizedGstType === "CGST_SGST") {
-      cgst = round2(parsedAmount * (parsedRate / 2) / 100);
-      sgst = round2(parsedAmount * (parsedRate / 2) / 100);
-    } else {
-      igst = round2(parsedAmount * parsedRate / 100);
-    }
+  const settings = await CompanySettings.findOne().lean();
+  const useNewLocalization = settings?.features?.USE_NEW_LOCALIZATION_ENGINE === true;
+  const useMultiCurrency = settings?.features?.USE_MULTI_CURRENCY_ENGINE === true;
+
+  let finalEntityId = null;
+  // Resolve currency without hardcoding INR — derive from entity when possible.
+  // The import engine always passes an explicit currency, so this fallback
+  // only fires for direct API calls that omit the currency field.
+  let resolvedEntityForCurrency = null;
+  if (!currency && entityId) {
+    const _eid = entityId || settings?.defaultEntityId;
+    if (_eid) resolvedEntityForCurrency = await Entity.findById(_eid).select("baseCurrency").lean();
   }
-  const totalTax = cgst + sgst + igst;
-  const totalAmount = round2(parsedAmount + totalTax);
+  let finalCurrency = currency || resolvedEntityForCurrency?.baseCurrency || null;
+  let finalExchangeRate = 1;
+  let finalBaseAmount = parsedAmount;
+  let finalCgst = 0;
+  let finalSgst = 0;
+  let finalIgst = 0;
+  let finalTotalAmount = 0;
+  let finalTaxLines = [];
+
+  if (useNewLocalization) {
+    let resolvedEntityId = entityId || settings?.defaultEntityId;
+    if (!resolvedEntityId) {
+      const e = new Error("Entity is required but could not be resolved");
+      e.status = 400;
+      throw e;
+    }
+    const entity = await Entity.findById(resolvedEntityId).lean();
+    if (!entity) {
+      const e = new Error("Entity not found");
+      e.status = 400;
+      throw e;
+    }
+
+    let pack;
+    try {
+      pack = LocalizationRegistry.get(entity.country);
+    } catch (err) {
+      const e = new Error(err.message);
+      e.status = 400;
+      throw e;
+    }
+    
+    // Pass raw inputs as expected by pack validation
+    const invoiceData = { amount: parsedAmount, gstRate, gstType, useGenericTaxEngine: settings?.features?.USE_GENERIC_TAX_ENGINE === true };
+    await pack.validateInvoice(invoiceData, entity);
+    const taxResult = await pack.calculateTax(invoiceData, entity);
+    
+    const normalized = normalizeTaxResult(taxResult);
+
+    finalEntityId = entity._id;
+    finalCurrency = currency || entity.baseCurrency;
+    
+    if (useMultiCurrency && finalCurrency !== entity.baseCurrency) {
+      const { getExchangeRate } = require("../services/currencyService");
+      const rateInfo = await getExchangeRate({
+        fromCurrency: finalCurrency,
+        toCurrency: entity.baseCurrency,
+        effectiveDate: new Date()
+      });
+      finalExchangeRate = rateInfo.rate;
+      finalBaseAmount = round2(parsedAmount * finalExchangeRate);
+    }
+
+    finalCgst = normalized.cgst;
+    finalSgst = normalized.sgst;
+    finalIgst = normalized.igst;
+    const totalTax = normalized.totalTax;
+    finalTotalAmount = round2(parsedAmount + totalTax);
+    finalTaxLines = normalized.taxLines;
+  } else {
+    if (parsedRate > 0) {
+      if (normalizedGstType === "CGST_SGST") {
+        finalCgst = round2(parsedAmount * (parsedRate / 2) / 100);
+        finalSgst = round2(parsedAmount * (parsedRate / 2) / 100);
+      } else {
+        finalIgst = round2(parsedAmount * parsedRate / 100);
+      }
+    }
+    const totalTax = finalCgst + finalSgst + finalIgst;
+    finalTotalAmount = round2(parsedAmount + totalTax);
+  }
 
   if (!financialYearId) {
     throw new Error("Active financial year is required");
   }
 
-  const session = await mongoose.startSession();
+  const isOwnedSession = !parentSession;
+  const session = parentSession || await mongoose.startSession();
   let invoice = null;
-  try {
-    await session.withTransaction(async () => {
-      const invoiceNumber = await allocateNextInvoiceNumber(financialYearId, session);
 
-      const [inv] = await Invoice.create(
+  const coreLogic = async () => {
+    const invoiceNumber = await allocateNextInvoiceNumber(financialYearId, session);
+
+    const [inv] = await Invoice.create(
         [
           {
             customer: customerId,
@@ -112,10 +194,10 @@ async function createInvoiceFromData({
             amount: parsedAmount,
             gstRate: parsedRate,
             gstType: normalizedGstType,
-            cgst,
-            sgst,
-            igst,
-            totalAmount,
+            cgst: finalCgst,
+            sgst: finalSgst,
+            igst: finalIgst,
+            totalAmount: finalTotalAmount,
             financialYearId,
             status: "unpaid",
             isDeferred: deferred,
@@ -128,6 +210,11 @@ async function createInvoiceFromData({
             eventId: eventId || null,
             milestoneId: milestoneId || null,
             batchStudentId: batchStudentId || null,
+            entityId: finalEntityId,
+            currency: finalCurrency,
+            exchangeRate: finalExchangeRate,
+            baseAmount: finalBaseAmount,
+            taxLines: finalTaxLines,
             createdAt: new Date(),
           },
         ],
@@ -162,9 +249,20 @@ async function createInvoiceFromData({
       }
 
       await assertPostTransactionAccountingInvariants(financialYearId, session);
-    });
+  };
+
+  try {
+    if (isOwnedSession) {
+      await session.withTransaction(coreLogic);
+    } else {
+      await coreLogic();
+    }
+  } catch (txErr) {
+    throw txErr;
   } finally {
-    await session.endSession();
+    if (isOwnedSession) {
+      await session.endSession();
+    }
   }
 
   await logAction(userId, ACTIONS.CREATE, "invoice", invoice._id, buildMetadata(null, {
@@ -195,7 +293,7 @@ async function createInvoice(req, res) {
     const userId = req.user?.sub ?? req.user?.id;
     const {
       customerId, amount, gstRate, gstType, isDeferred, deferredMonths, revenueType,
-      projectId, batchId, eventId, milestoneId, batchStudentId, department,
+      projectId, batchId, eventId, milestoneId, batchStudentId, department, entityId, currency,
     } = req.body ?? {};
 
     if (!customerId || typeof customerId !== "string") {
@@ -227,6 +325,8 @@ async function createInvoice(req, res) {
       batchStudentId,
       department,
       financialYearId,
+      entityId,
+      currency,
     });
 
     return res.status(201).json(invoice);
@@ -443,6 +543,53 @@ async function deleteInvoice(req, res) {
   }
 }
 
+async function generateEInvoice(req, res) {
+  try {
+    const { id } = req.params;
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: "invalid invoice id" });
+    }
+
+    const invoice = await Invoice.findById(id).populate("customer").lean();
+    if (!invoice) return res.status(404).json({ message: "Invoice not found" });
+
+    if (invoice.irn) {
+      return res.status(400).json({ message: "e-Invoice already generated for this invoice" });
+    }
+
+    const entity = await Entity.findById(invoice.entityId).lean();
+    if (!entity) return res.status(400).json({ message: "Entity not found for this invoice" });
+
+    // Call GSTN Service
+    const result = await gstnEinvService.generateIRN(invoice, entity);
+
+    if (result.success) {
+      const updated = await Invoice.findByIdAndUpdate(
+        id,
+        {
+          $set: {
+            irn: result.irn,
+            qrCode: result.qrCode,
+            ackNo: result.ackNo,
+            ackDate: result.ackDate,
+            einvoiceStatus: "generated",
+          }
+        },
+        { new: true }
+      ).lean();
+
+      await logAction(req.user?.id, ACTIONS.UPDATE, "invoice", id, { action: "einvoice_generated", irn: result.irn });
+      return res.json(updated);
+    } else {
+      await Invoice.findByIdAndUpdate(id, { $set: { einvoiceStatus: "failed", einvoiceError: result.error } });
+      return res.status(422).json({ message: result.error, code: "GSTN_REJECTION" });
+    }
+  } catch (err) {
+    logger.error("einvoice: generation failed", { error: err.message });
+    return res.status(500).json({ message: "Internal server error during e-invoicing" });
+  }
+}
+
 module.exports = {
   createInvoice,
   createInvoiceFromData,
@@ -450,5 +597,6 @@ module.exports = {
   getInvoicePdf,
   updateInvoice,
   deleteInvoice,
+  generateEInvoice,
 };
 

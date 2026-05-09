@@ -3,10 +3,12 @@ const mongoose = require("mongoose");
 const Invoice = require("../models/Invoice");
 const Payment = require("../models/Payment");
 const Voucher = require("../models/Voucher");
-const { recordBankTransaction } = require("../services/bankService");
+const { recordBankTransaction, glAccountNameForBankAccountId } = require("../services/bankService");
 const { logAction, buildMetadata, ACTIONS } = require("../utils/audit");
-const { createVoucherForPayment, createVoucherForPaymentReversal } = require("../services/voucherService");
+const { createValidatedVoucher, createVoucherForPaymentReversal } = require("../services/voucherService");
 const { assertPostTransactionAccountingInvariants } = require("../services/accountingInvariantsService");
+const { allocateVoucherNumber } = require("../services/voucherNumberService");
+const { validateAndHealBeforeTransaction } = require("../services/systemHealService");
 const { sendInternalError, sendStructuredError, ACTION } = require("../utils/httpErrorResponse");
 
 function toNonNegativeNumber(value) {
@@ -20,29 +22,39 @@ function normalizeMethod(method) {
 
 async function createPayment(req, res) {
   try {
+    // eslint-disable-next-line no-console
+    console.log("Payment request:", req.body);
     const userId = req.user?.sub ?? req.user?.id;
     const { invoiceId, amount, method, reference, bankAccountId } = req.body ?? {};
 
+    const invalidPayment = () =>
+      sendStructuredError(res, {
+        status: 400,
+        code: "INVALID_PAYMENT",
+        message: "Invalid payment input",
+        action: ACTION.FIX_REQUIRED,
+      });
+
     if (!invoiceId || typeof invoiceId !== "string") {
-      return res.status(400).json({ message: "invoiceId is required" });
+      return invalidPayment();
     }
     if (!mongoose.Types.ObjectId.isValid(invoiceId)) {
-      return res.status(400).json({ message: "invalid invoiceId" });
+      return invalidPayment();
     }
 
     const parsedAmount = toNonNegativeNumber(amount);
     if (parsedAmount === null || parsedAmount <= 0) {
-      return res.status(400).json({ message: "amount must be > 0" });
+      return invalidPayment();
     }
 
     const normalizedMethod = normalizeMethod(method);
     if (!normalizedMethod || !["cash", "bank", "upi"].includes(normalizedMethod)) {
-      return res.status(400).json({ message: "invalid payment method" });
+      return invalidPayment();
     }
 
     const invoice = await Invoice.findById(invoiceId);
     if (!invoice) {
-      return res.status(404).json({ message: "Invoice not found" });
+      return invalidPayment();
     }
 
     const currentPaid =
@@ -52,10 +64,7 @@ async function createPayment(req, res) {
     const remaining = Math.max(0, remainingRaw);
 
     if (parsedAmount > remaining + epsilon) {
-      return res.status(400).json({
-        message: "Payment exceeds remaining amount",
-        remaining,
-      });
+      return invalidPayment();
     }
 
     const financialYearId = req.activeYear?._id ?? null;
@@ -70,6 +79,14 @@ async function createPayment(req, res) {
           bankAccountId && mongoose.Types.ObjectId.isValid(String(bankAccountId))
             ? bankAccountId
             : null;
+
+        // Re-read invoice inside the transaction to reduce race-condition risk.
+        const invoiceDoc = await Invoice.findById(invoiceId).session(session);
+        if (!invoiceDoc) throwInvalidPaymentInputError();
+        const txCurrentPaid =
+          typeof invoiceDoc.paidAmount === "number" ? invoiceDoc.paidAmount : 0;
+        const txRemaining = Math.max(0, (invoiceDoc.totalAmount ?? 0) - txCurrentPaid);
+        if (parsedAmount > txRemaining + epsilon) throwInvalidPaymentInputError();
 
         payment = await Payment.create(
           [
@@ -90,7 +107,46 @@ async function createPayment(req, res) {
         );
         payment = payment[0];
 
-        await createVoucherForPayment({ payment, financialYearId, session, invoice });
+        // -------------------------------------------------------------------
+        // Voucher creation (strict payload validation)
+        // -------------------------------------------------------------------
+        const glCashBank = await glAccountNameForBankAccountId(bankRef ?? null, session);
+        const voucherNumber = await allocateVoucherNumber(session);
+
+        const voucherPayload = {
+          type: "payment",
+          date: new Date(),
+          voucherNumber,
+          entries: [
+            { account: glCashBank, debit: parsedAmount, credit: 0 },
+            { account: "Accounts Receivable", debit: 0, credit: parsedAmount },
+          ],
+        };
+
+        if (!Array.isArray(voucherPayload.entries) || voucherPayload.entries.length < 2) {
+          const e = new Error("INVALID_VOUCHER: voucher payload entries insufficient");
+          e.code = "INVALID_VOUCHER";
+          throw e;
+        }
+
+        const totalDebit = voucherPayload.entries.reduce((s, e) => s + (Number(e.debit) || 0), 0);
+        const totalCredit = voucherPayload.entries.reduce((s, e) => s + (Number(e.credit) || 0), 0);
+        if (Math.abs(totalDebit - totalCredit) > 1e-6) {
+          const e = new Error(`INVALID_VOUCHER: debit ${totalDebit} != credit ${totalCredit}`);
+          e.code = "INVALID_VOUCHER";
+          throw e;
+        }
+
+        await createValidatedVoucher({
+          ...voucherPayload,
+          financialYearId,
+          narration: `Payment received — invoice ${String(invoiceDoc._id)} — ₹${parsedAmount} via ${normalizedMethod}`,
+          referenceType: "payment",
+          referenceId: payment._id,
+          invoiceId: invoiceDoc._id,
+          session,
+        });
+
         await recordBankTransaction({
           bankAccountId: bankRef ?? null,
           type: "credit",
@@ -100,9 +156,9 @@ async function createPayment(req, res) {
           session,
         });
 
-        const paidAmount = currentPaid + parsedAmount;
+        const paidAmount = txCurrentPaid + parsedAmount;
         const newStatus =
-          Math.abs(paidAmount - invoice.totalAmount) <= epsilon
+          Math.abs(paidAmount - (invoiceDoc.totalAmount ?? 0)) <= epsilon
             ? "paid"
             : paidAmount > 0
               ? "partial"
@@ -131,40 +187,31 @@ async function createPayment(req, res) {
 
     return res.status(201).json(payment);
   } catch (err) {
-    if (err?.code === "INVALID_VOUCHER" || err?.code === "VOUCHER_NUMBER_FAILED") {
-      return sendStructuredError(res, {
-        status: 400,
-        code: "INVALID_VOUCHER",
-        message: err.message || "Invalid voucher",
-        action: ACTION.CONTACT_ADMIN,
-      });
-    }
-    if (err?.code === "INSUFFICIENT_FUNDS") {
-      return sendStructuredError(res, {
-        status: 400,
-        code: "INSUFFICIENT_FUNDS",
-        message: err.message || "Insufficient funds",
-        action: ACTION.RETRY,
-      });
-    }
-    if (
-      err?.code === "BANK_GL_BLOCK" ||
-      err?.code === "ACCOUNTING_INVARIANT_BANK_GL" ||
-      err?.code === "ACCOUNTING_INVARIANT_BALANCE_SHEET" ||
-      err?.code === "ACCOUNTING_INVARIANT_NEGATIVE_BANK"
-    ) {
-      return sendStructuredError(res, {
-        status: err.status || 503,
-        code: err.code,
-        message: err.message || "Accounting check failed",
-        action: ACTION.RETRY,
-        details: err.metrics,
-      });
-    }
     // eslint-disable-next-line no-console
-    console.error(err);
-    return sendInternalError(res, err, { code: "PAYMENT_FAILED", action: ACTION.RETRY });
+    console.error("PAYMENT ERROR:", err);
+
+    if (err?.code === "INVALID_PAYMENT_INPUT") {
+      return sendStructuredError(res, {
+        status: 400,
+        code: "INVALID_PAYMENT",
+        message: "Invalid payment input",
+        action: ACTION.FIX_REQUIRED,
+      });
+    }
+
+    return sendStructuredError(res, {
+      status: 503,
+      code: "PAYMENT_FAILED",
+      message: "Payment could not be processed",
+      action: ACTION.RETRY,
+    });
   }
+}
+
+function throwInvalidPaymentInputError() {
+  const e = new Error("Invalid payment input");
+  e.code = "INVALID_PAYMENT_INPUT";
+  throw e;
 }
 
 async function updatePayment(req, res) {

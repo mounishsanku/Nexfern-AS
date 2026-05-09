@@ -6,6 +6,8 @@ const Invoice = require("../models/Invoice");
 const FinancialYear = require("../models/FinancialYear");
 const BankAccount = require("../models/BankAccount");
 const { buildAccountMap, resolveFilter, round } = require("../controllers/reportController");
+const LocalizationRegistry = require("../localization/registry/LocalizationRegistry");
+const { validateSecurityConfig } = require("./securityValidationService");
 
 const EPS = 0.02;
 /** Operational wallets vs GL Cash+Bank — rupee tolerance (aligned with bankGlConsistencyService). */
@@ -176,7 +178,7 @@ async function runSystemValidation() {
         else otherAssets += row.balance;
       }
       if (row.type === "liability") {
-        if (row.account === "GST Payable") gstPayable = -row.balance;
+        if (row.account === LocalizationRegistry.getTaxLiabilityAccount()) gstPayable = -row.balance;
         else otherLiabilities += -row.balance;
       }
       if (row.type === "equity") retainedEarnings += -row.balance;
@@ -350,6 +352,17 @@ async function runSystemValidation() {
     warnings.push({
       code: "BANK_GL_CHECK_SKIPPED",
       message: `Bank vs GL check skipped: ${e?.message || e}`,
+    });
+  }
+
+  // --- Enterprise Security Diagnostics ---
+  try {
+    const securityCheck = await validateSecurityConfig();
+    warnings.push(...securityCheck.warnings);
+  } catch (e) {
+    warnings.push({
+      code: "SECURITY_CHECK_SKIPPED",
+      message: `Security configuration validation skipped: ${e?.message || e}`,
     });
   }
 

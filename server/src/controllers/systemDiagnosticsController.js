@@ -13,6 +13,9 @@ const OpeningBalance = require("../models/OpeningBalance");
 const Customer = require("../models/Customer");
 const Vendor = require("../models/Vendor");
 const FinancialYear = require("../models/FinancialYear");
+const CompanySettings = require("../models/CompanySettings");
+const { encryptBackupPayload, decryptBackupPayload } = require("../services/backupEncryptionService");
+const IncidentLog = require("../models/IncidentLog");
 
 /**
  * GET /api/system/diagnostics
@@ -121,11 +124,19 @@ async function postBackup(req, res) {
       voucherEntries,
     };
 
+    const settings = await CompanySettings.findOne().lean();
+    const useEncryption = settings?.features?.USE_ENCRYPTED_BACKUPS === true;
+
+    let finalPayload = payload;
+    if (useEncryption) {
+      finalPayload = encryptBackupPayload(payload);
+    }
+
     const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-    const filename = `nexfern-backup-${stamp}.json`;
+    const filename = useEncryption ? `nexfern-backup-${stamp}.enc.json` : `nexfern-backup-${stamp}.json`;
     res.setHeader("Content-Type", "application/json; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-    res.send(JSON.stringify(payload, null, 2));
+    res.send(JSON.stringify(finalPayload, null, 2));
   } catch (err) {
     console.error("postBackup error:", err);
     return sendStructuredError(res, {
@@ -160,12 +171,39 @@ async function postRestore(req, res) {
       });
     }
 
-    const backup = req.body.backup;
+    let backup = req.body.backup;
     if (!backup || typeof backup !== "object") {
       return res.status(400).json({
         message: "backup must be the parsed JSON object from a Nexfern backup file",
         code: "RESTORE_BACKUP_REQUIRED",
       });
+    }
+
+    const settings = await CompanySettings.findOne().lean();
+    const requireEncryption = settings?.features?.USE_ENCRYPTED_BACKUPS === true;
+
+    if (requireEncryption && !backup.encrypted) {
+      await IncidentLog.create({
+        severity: "high",
+        category: "security",
+        source: "systemDiagnosticsController",
+        message: "Attempted to restore a plaintext backup while encryption is required",
+      });
+      return res.status(403).json({
+        message: "Plaintext backups are rejected by security policy. Use an encrypted backup.",
+        code: "RESTORE_PLAINTEXT_REJECTED",
+      });
+    }
+
+    if (backup.encrypted) {
+      try {
+        backup = await decryptBackupPayload(backup, req.user?.id);
+      } catch (err) {
+        return res.status(403).json({
+          message: err.message,
+          code: "RESTORE_DECRYPTION_FAILED",
+        });
+      }
     }
 
     if (mode === "clear" && Number(backup.version || 1) < 2) {

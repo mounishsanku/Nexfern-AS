@@ -1,0 +1,209 @@
+openapi: 3.0.3
+info:
+  title: Nexfern FinanceOS API
+  version: 1.0.0
+  description: Enterprise Accounting and Finance APIs for Nexfern FinanceOS.
+servers:
+  - url: /api
+    description: Main API Server
+paths:
+  /auth/login:
+    post:
+      summary: Authenticate user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                email: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: Successfully authenticated
+  /invoices:
+    post:
+      summary: Create a new invoice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvoiceCreate'
+      responses:
+        '201':
+          description: Invoice created
+  /invoices/{id}/einvoice:
+    post:
+      summary: Generate IRN and QR code via GSTN (e-Invoicing)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: e-Invoice generated successfully
+        '422':
+          description: GSTN Rejection
+        '400':
+          description: Validation error or already generated
+  /expenses:
+    post:
+      summary: Create a new expense
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExpenseCreate'
+      responses:
+        '201':
+          description: Expense created
+  /analytics/kpi:
+    get:
+      summary: Get KPI Summary
+      responses:
+        '200':
+          description: KPI summary generated
+  /reconciliation/sessions:
+    post:
+      summary: Start a reconciliation session
+      responses:
+        '201':
+          description: Session created
+  /system/diagnostics/full:
+    post:
+      summary: Run full system diagnostics
+      responses:
+        '200':
+          description: Diagnostics completed
+  /import/template/{type}:
+    get:
+      summary: Download Excel import template
+      parameters:
+        - name: type
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [invoice, expense, customer, vendor]
+      responses:
+        '200':
+          description: Excel file stream
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema: { type: string, format: binary }
+  /import/upload:
+    post:
+      summary: Upload and validate an Excel file
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary, description: "Supports .xlsx, .xls, .csv, .xml" }
+                type: { type: string, enum: [invoice, expense, customer, vendor, payment] }
+                entityId: { type: string }
+                source: { type: string, enum: [excel, tally], default: excel }
+      responses:
+        '201':
+          description: Import job created (status validating/ready/failed)
+  /import/execute/{jobId}:
+    post:
+      summary: Execute a validated import job
+      parameters:
+        - name: jobId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Import completed successfully
+components:
+  schemas:
+    InvoiceCreate:
+      type: object
+      required:
+        - customerId
+        - amount
+      properties:
+        customerId: { type: string }
+        amount: { type: number, minimum: 0 }
+        gstRate:
+          type: number
+          minimum: 0
+          description: Tax rate percentage. 0 if not applicable.
+        gstType:
+          type: string
+          description: >
+            Tax type code — locale-dependent. India: CGST_SGST or IGST.
+            Other localization packs may use different values (e.g. VAT_STANDARD).
+            Omit or set null for zero-tax invoices. No server-side default.
+        currency:
+          type: string
+          description: >
+            ISO 4217 currency code (e.g. INR, USD, EUR, GBP). If omitted,
+            derived from the Entity baseCurrency. Callers should always provide
+            this explicitly. There is no server-side default of INR.
+          example: INR
+        entityId:
+          type: string
+          description: Required when multi-entity or localization mode is active.
+        financialYearId: { type: string }
+        date: { type: string, format: date }
+        dueDate: { type: string, format: date }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              description: { type: string }
+              quantity: { type: number }
+              unitPrice: { type: number }
+              accountId: { type: string }
+    ExpenseCreate:
+      type: object
+      required:
+        - title
+        - amount
+        - category
+      properties:
+        vendorId: { type: string }
+        title: { type: string }
+        category: { type: string }
+        date: { type: string, format: date }
+        amount: { type: number, minimum: 0.01 }
+        accountId: { type: string }
+        description: { type: string }
+        financialYearId: { type: string }
+    EntityCreate:
+      type: object
+      required:
+        - name
+        - country
+        - baseCurrency
+      properties:
+        name: { type: string }
+        country:
+          type: string
+          description: >
+            ISO 3166-1 alpha-2 country code (e.g. IN, US, GB, DE).
+            Required — no server-side default.
+          example: IN
+        baseCurrency:
+          type: string
+          description: >
+            ISO 4217 currency code matching the entity home currency (e.g. INR, USD, GBP, EUR).
+            Required — no server-side default.
+          example: INR
+        fiscalYearStartMonth:
+          type: integer
+          minimum: 1
+          maximum: 12
+          description: >
+            1-indexed month when the fiscal year begins.
+            Defaults to 4 (April) if omitted, aligned with the Indian financial year.

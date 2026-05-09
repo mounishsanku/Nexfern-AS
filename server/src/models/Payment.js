@@ -29,6 +29,12 @@ const paymentSchema = new mongoose.Schema(
     matched: { type: Boolean, default: false },
     date: { type: Date, default: Date.now },
     isReversed: { type: Boolean, default: false },
+    entityId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Entity",
+      index: true,
+      default: null,
+    },
   },
   { timestamps: false },
 );

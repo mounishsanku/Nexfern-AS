@@ -2,7 +2,7 @@ import * as React from "react";
 import { apiFetch, getStoredToken } from "@/api";
 import { Button } from "@/components/ui/Button";
 import { Container } from "@/components/ui/Container";
-import { getStoredRole } from "@/components/RoleProtectedRoute";
+import { getStoredRole } from "@/utils/roleAuth";
 
 type AccountType = "asset" | "liability" | "equity" | "revenue" | "expense";
 

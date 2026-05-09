@@ -3,9 +3,10 @@ import { apiFetch, getStoredToken, downloadGstReport, downloadCsv } from "@/api"
 import { Button } from "@/components/ui/Button";
 import { Container } from "@/components/ui/Container";
 import { InlineSpinner } from "@/components/ui/Spinner";
-import { VirtualizedTable, type VirtualTableColumn } from "@/components/VirtualizedTable";
+import { VirtualizedTable } from "@/components/VirtualizedTable";
+import type { VirtualTableColumn } from "@/types/virtualizedTable";
 import { nexfernCsvFilename } from "@/lib/exportFilename";
-import { useToast } from "@/context/ToastContext";
+import { useToast } from "@/context/useToast";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 

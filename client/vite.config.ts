@@ -10,13 +10,21 @@ export default defineConfig({
     },
   },
   server: {
+    host: true, 
     port: 5173,
     strictPort: true,
+    // Allows ngrok to bypass the security block
+    allowedHosts: [".ngrok-free.dev"], 
+    // Fixes the "WebSocket" connection for auto-refreshing
+    hmr: {
+      clientPort: 443,
+      protocol: "wss",
+    },
     proxy: {
-      // Dev: browser requests same-origin /api/* → Express on 5000 (avoids CORS / wrong host).
       "/api": {
         target: "http://127.0.0.1:5000",
         changeOrigin: true,
+        secure: false,
       },
     },
   },

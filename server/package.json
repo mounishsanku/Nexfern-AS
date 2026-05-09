@@ -7,24 +7,33 @@
     "dev": "nodemon src/index.js",
     "start": "node src/index.js",
     "migrate:account-parents": "node src/migrations/fixAccountParentHierarchy.js",
-    "reset:financial": "node ../scripts/resetFinancialData.js"
+    "reset:financial": "node ../scripts/resetFinancialData.js",
+    "migrate:default-entity": "node -r dotenv/config scripts/migrateDefaultIndiaEntity.js",
+    "test": "cross-env NODE_ENV=test jest",
+    "test:coverage": "cross-env NODE_ENV=test jest --coverage"
   },
-  "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "axios": "^1.16.0",
     "bcrypt": "^6.0.0",
     "cors": "^2.8.6",
     "dejavu-fonts-ttf": "^2.37.3",
     "dotenv": "^17.3.1",
     "express": "^5.2.1",
+    "fast-xml-parser": "^5.7.3",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.3.1",
     "multer": "^2.1.1",
-    "pdfkit": "^0.18.0"
+    "pdfkit": "^0.18.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "nodemon": "^3.1.14"
+    "cross-env": "^10.1.0",
+    "jest": "^30.3.0",
+    "mongodb-memory-server": "^11.1.0",
+    "nodemon": "^3.1.14",
+    "supertest": "^7.2.2"
   }
 }

@@ -46,17 +46,6 @@ export function getApiBase(): string {
 
 export const API = getApiBase();
 
-/** Use in UI: show Retry when the API returned a recoverable code or explicit RETRY action. */
-export function shouldOfferApiRetry(err: unknown): boolean {
-  const e = err as Error & { action?: string; code?: string; status?: number };
-  if (e.action === "RETRY") return true;
-  const c = e.code;
-  if (c === "SYSTEM_NOT_READY" || c === "PRECHECK_FAILED" || c === "AUTO_RECOVERED") {
-    return true;
-  }
-  if (e.status === 503) return true;
-  return false;
-}
 
 type ApiFetchOptions = Omit<RequestInit, "headers"> & {
   headers?: Record<string, string>;
@@ -215,29 +204,6 @@ export async function apiUpload<T = unknown>(
   return res.json() as Promise<T>;
 }
 
-export type GstInvoice = {
-  invoiceNumber: string;
-  date: string;
-  customerName: string;
-  gstType: string;
-  taxableValue: number;
-  cgst: number;
-  sgst: number;
-  igst: number;
-  totalAmount: number;
-};
-
-export type Gstr1Data = {
-  invoices: GstInvoice[];
-  totalSales: number;
-  totalTax: number;
-};
-
-export type Gstr3bData = {
-  outwardTax: number;
-  inwardTax: number;
-  netPayable: number;
-};
 
 export async function downloadGstReport(
   report: "gstr1" | "gstr3b",

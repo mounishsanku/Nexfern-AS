@@ -14,6 +14,8 @@ const voucherEntrySchema = new mongoose.Schema(
     },
     debit:  { type: Number, required: true, default: 0, min: 0 },
     credit: { type: Number, required: true, default: 0, min: 0 },
+    currency: { type: String },
+    baseAmount: { type: Number, default: null },
   },
   { timestamps: false }
 );

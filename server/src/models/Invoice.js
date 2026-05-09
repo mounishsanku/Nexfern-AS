@@ -17,9 +17,6 @@ const invoiceSchema = new mongoose.Schema(
     },
     gstType: {
       type: String,
-      required: true,
-      enum: ["CGST_SGST", "IGST"],
-      default: "CGST_SGST",
     },
     gstRate: { type: Number, default: 0, min: 0 },
     cgst: { type: Number, required: true, default: 0, min: 0 },
@@ -54,8 +51,39 @@ const invoiceSchema = new mongoose.Schema(
     eventId: { type: mongoose.Schema.Types.ObjectId, ref: "Event", default: null },
     milestoneId: { type: String, default: null },
     batchStudentId: { type: String, default: null },
+    entityId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Entity",
+      index: true,
+      default: null,
+    },
+    currency: { type: String },
+    exchangeRate: { type: Number, default: 1 },
+    baseAmount: { type: Number, default: null },
+    taxLines: {
+      type: [{
+        name: { type: String, required: true },
+        code: { type: String, required: true },
+        taxType: { type: String, required: true },
+        rate: { type: Number, required: true, min: 0 },
+        amount: { type: Number, required: true, min: 0 }
+      }],
+      default: []
+    },
     createdAt: { type: Date, default: Date.now },
     isReversed: { type: Boolean, default: false },
+    // e-Invoicing Fields
+    irn: { type: String, trim: true, default: null },
+    qrCode: { type: String, trim: true, default: null },
+    ackNo: { type: String, trim: true, default: null },
+    ackDate: { type: String, trim: true, default: null },
+    einvoiceStatus: {
+      type: String,
+      enum: ["none", "generated", "cancelled", "failed"],
+      default: "none",
+      lowercase: true,
+    },
+    einvoiceError: { type: String, default: null },
   },
   { timestamps: false },
 );

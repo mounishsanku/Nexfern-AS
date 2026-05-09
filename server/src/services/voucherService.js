@@ -8,6 +8,8 @@ const Payment        = require("../models/Payment");
 const { getAccountIdByName } = require("./accountService");
 const { glAccountNameForBankAccountId } = require("./bankService");
 const { allocateVoucherNumber } = require("./voucherNumberService");
+const { round2 } = require("../utils/round");
+const LocalizationRegistry = require("../localization/registry/LocalizationRegistry");
 
 function httpError(message, status, code) {
   const e = new Error(message);
@@ -45,6 +47,9 @@ async function createValidatedVoucher(payload) {
     department = null,
     reversedFrom = null,
     session = null,
+    entityId = null,
+    currency = "INR",
+    exchangeRate = 1,
   } = payload;
 
   if (!financialYearId) {
@@ -119,6 +124,7 @@ async function createValidatedVoucher(payload) {
     department: department ?? null,
     date: voucherDate,
     reversedFrom: reversedFrom ?? null,
+    entityId: entityId ?? null,
   };
 
   let voucher;
@@ -139,12 +145,19 @@ async function createValidatedVoucher(payload) {
   let resolvedEntries;
   try {
     resolvedEntries = await Promise.all(
-      entries.map(async (e) => ({
-        voucherId: voucher._id,
-        accountId: await getAccountIdByName(e.account),
-        debit: Number(e.debit) || 0,
-        credit: Number(e.credit) || 0,
-      })),
+      entries.map(async (e) => {
+        const debitNum = Number(e.debit) || 0;
+        const creditNum = Number(e.credit) || 0;
+        const rawAmount = debitNum > 0 ? debitNum : creditNum;
+        return {
+          voucherId: voucher._id,
+          accountId: await getAccountIdByName(e.account),
+          debit: debitNum,
+          credit: creditNum,
+          currency,
+          baseAmount: round2(rawAmount * (exchangeRate || 1)),
+        };
+      }),
     );
   } catch (err) {
     throwInvalidVoucher(err?.message || "Could not resolve GL accounts for voucher", "INVALID_VOUCHER");
@@ -209,6 +222,9 @@ async function createVoucher({
   reversedFrom = null,
   date = null,
   session = null,
+  entityId = null,
+  currency = "INR",
+  exchangeRate = 1,
 }) {
   if (referenceType && referenceId) {
     const existing = await Voucher.findOne({ referenceType, referenceId }).session(session || null).lean();
@@ -230,6 +246,9 @@ async function createVoucher({
     reversedFrom,
     date: date != null ? date : new Date(),
     session,
+    entityId,
+    currency,
+    exchangeRate,
   });
 }
 
@@ -333,7 +352,12 @@ async function createVoucherForInvoice({ invoice, financialYearId, session = nul
   const cgst = Number(invoice.cgst) || 0;
   const sgst = Number(invoice.sgst) || 0;
   const igst = Number(invoice.igst) || 0;
-  const gstAmount  = cgst + sgst + igst;
+  let gstAmount  = cgst + sgst + igst;
+  
+  if (gstAmount === 0 && Number(invoice.totalAmount) > Number(invoice.amount)) {
+    gstAmount = Number(invoice.totalAmount) - Number(invoice.amount);
+  }
+
   const baseAmount = Number(invoice.amount) || 0;
 
   const entries = [
@@ -341,7 +365,7 @@ async function createVoucherForInvoice({ invoice, financialYearId, session = nul
     { account: "Revenue",             debit: 0, credit: baseAmount },
   ];
   if (gstAmount > 0) {
-    entries.push({ account: "GST Payable", debit: 0, credit: gstAmount });
+    entries.push({ account: LocalizationRegistry.getTaxLiabilityAccount(), debit: 0, credit: gstAmount });
   }
 
   return createVoucher({
@@ -353,6 +377,9 @@ async function createVoucherForInvoice({ invoice, financialYearId, session = nul
     department:    invoice.department ?? null,
     entries,
     session,
+    entityId:      invoice.entityId ?? null,
+    currency:      invoice.currency ?? "INR",
+    exchangeRate:  invoice.exchangeRate ?? 1,
   });
 }
 
@@ -364,7 +391,12 @@ async function createVoucherForDeferredInvoice({ invoice, financialYearId, sessi
   const cgst = Number(invoice.cgst) || 0;
   const sgst = Number(invoice.sgst) || 0;
   const igst = Number(invoice.igst) || 0;
-  const gstAmount  = cgst + sgst + igst;
+  let gstAmount  = cgst + sgst + igst;
+
+  if (gstAmount === 0 && Number(invoice.totalAmount) > Number(invoice.amount)) {
+    gstAmount = Number(invoice.totalAmount) - Number(invoice.amount);
+  }
+
   const baseAmount = Number(invoice.amount) || 0;
 
   const entries = [
@@ -372,7 +404,7 @@ async function createVoucherForDeferredInvoice({ invoice, financialYearId, sessi
     { account: "Deferred Revenue",    debit: 0, credit: baseAmount },
   ];
   if (gstAmount > 0) {
-    entries.push({ account: "GST Payable", debit: 0, credit: gstAmount });
+    entries.push({ account: LocalizationRegistry.getTaxLiabilityAccount(), debit: 0, credit: gstAmount });
   }
 
   return createVoucher({
@@ -384,6 +416,9 @@ async function createVoucherForDeferredInvoice({ invoice, financialYearId, sessi
     department:    invoice.department ?? null,
     entries,
     session,
+    entityId:      invoice.entityId ?? null,
+    currency:      invoice.currency ?? "INR",
+    exchangeRate:  invoice.exchangeRate ?? 1,
   });
 }
 

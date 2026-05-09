@@ -41,6 +41,18 @@ const expenseSchema = new mongoose.Schema(
       ref: "FinancialYear",
       default: null,
     },
+    invoiceNumber: { type: String, trim: true, default: null },
+    taxableAmount: { type: Number, default: 0 },
+    gstRate: { type: Number, default: 0 },
+    cgst: { type: Number, default: 0 },
+    sgst: { type: Number, default: 0 },
+    igst: { type: Number, default: 0 },
+    totalAmount: { type: Number, default: 0 },
+    einvoiceStatus: {
+      type: String,
+      enum: ["none", "matched", "discrepancy"],
+      default: "none",
+    },
     matched: { type: Boolean, default: false },
     createdAt: { type: Date, default: Date.now },
     isReversed: { type: Boolean, default: false },
@@ -54,6 +66,12 @@ const expenseSchema = new mongoose.Schema(
     approvedAt: { type: Date, default: null },
     /** If pending, approver may set on approve */
     bankAccountId: { type: mongoose.Schema.Types.ObjectId, ref: "BankAccount", default: null },
+    entityId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Entity",
+      index: true,
+      default: null,
+    },
   },
   { timestamps: false },
 );

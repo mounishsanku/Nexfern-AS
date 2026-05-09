@@ -8,12 +8,15 @@ import { EmptyState } from "@/components/ui/EmptyState";
 import { Modal } from "@/components/ui/Modal";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { InlineSpinner } from "@/components/ui/Spinner";
-import { inputClassName } from "@/components/ui/Input";
 import { FieldError } from "@/components/ui/Input";
-import { VirtualizedTable, type VirtualTableColumn } from "@/components/VirtualizedTable";
+import { VirtualizedTable } from "@/components/VirtualizedTable";
+import { inputClassName } from "@/constants/inputStyles";
 import { formatCurrency } from "@/lib/format";
-import { useToast } from "@/context/ToastContext";
+import { useToast } from "@/context/useToast";
+import type { VirtualTableColumn } from "@/types/virtualizedTable";
 import { useFirstFieldFocus, createFormEnterSubmitHandler } from "@/hooks/useFormEnhancements";
+import { useLocalization } from "@/context/LocalizationContext";
+import { getInvoiceFields } from "@/localization/getInvoiceFields";
 
 type Invoice = {
   _id: string;
@@ -26,6 +29,12 @@ type Invoice = {
   paidAmount?: number;
   status: "paid" | "unpaid" | "partial" | string;
   createdAt: string;
+  irn?: string;
+  qrCode?: string;
+  ackNo?: string;
+  ackDate?: string;
+  einvoiceStatus?: "none" | "generated" | "cancelled" | "failed";
+  einvoiceError?: string;
 };
 
 type Customer = {
@@ -69,6 +78,11 @@ function InvoicesInner() {
   const [creating, setCreating] = React.useState(false);
   const [fieldErrors, setFieldErrors] = React.useState<Record<string, string>>({});
 
+  const { features, invoiceFields } = useLocalization();
+  const useLocalizationEngine = features?.USE_NEW_LOCALIZATION_ENGINE === true;
+  const dynamicFields = React.useMemo(() => getInvoiceFields(invoiceFields || []), [invoiceFields]);
+  const [dynamicValues, setDynamicValues] = React.useState<Record<string, string>>({});
+
   const [filterStatus, setFilterStatus] = React.useState<"" | "paid" | "partial" | "unpaid">("");
   const [dateFrom, setDateFrom] = React.useState("");
   const [dateTo, setDateTo] = React.useState("");
@@ -80,6 +94,8 @@ function InvoicesInner() {
   const [paymentError, setPaymentError] = React.useState<string | null>(null);
 
   const [pdfDownloadingId, setPdfDownloadingId] = React.useState<string | null>(null);
+  const [einvoiceGeneratingId, setEinvoiceGeneratingId] = React.useState<string | null>(null);
+  const [viewingQr, setViewingQr] = React.useState<{ irn: string; qrCode: string } | null>(null);
 
   const customerFieldRef = useFirstFieldFocus<HTMLSelectElement>(showCreate);
   const paymentAmountRef = useFirstFieldFocus<HTMLInputElement>(Boolean(paymentInvoiceId));
@@ -116,37 +132,7 @@ function InvoicesInner() {
     return list;
   }, [invoices, filterStatus, dateFrom, dateTo]);
 
-  const onDownloadPdf = (id: string, invoiceNumber?: string | null) => {
-    if (!token) {
-      setError("Missing auth token. Please login again.");
-      return;
-    }
-    setPdfDownloadingId(id);
-    apiFetchBlob(`/invoices/${id}/pdf`, { token })
-      .then((blob) => {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        const safe =
-          invoiceNumber && String(invoiceNumber).trim()
-            ? String(invoiceNumber).replace(/[^\w.-]+/g, "_")
-            : `invoice-${id}`;
-        a.download = `${safe}.pdf`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        setTimeout(() => URL.revokeObjectURL(url), 30000);
-        success("Invoice PDF downloaded.");
-      })
-      .catch((err) => {
-        const msg = err instanceof Error ? err.message : "Failed to download invoice.";
-        toastError(msg);
-        setError(msg);
-      })
-      .finally(() => setPdfDownloadingId(null));
-  };
-
-  async function fetchCustomers() {
+  const fetchCustomers = React.useCallback(async () => {
     if (!token) return;
 
     try {
@@ -159,9 +145,9 @@ function InvoicesInner() {
     } catch (err) {
       console.error("Failed to load customers:", err);
     }
-  }
+  }, [token]);
 
-  async function fetchInvoices() {
+  const fetchInvoices = React.useCallback(async () => {
     if (!token) {
       setError("Missing auth token. Please login again.");
       setLoading(false);
@@ -194,68 +180,132 @@ function InvoicesInner() {
       );
       setLoading(false);
     }
-  }
+  }, [token]);
 
-  async function addPayment(
-    invoiceId: string,
-    amt: number,
-    method: "cash" | "bank" | "upi",
-  ) {
-    const inv = invoices?.find((invoice) => invoice._id === invoiceId);
-    const paid = inv?.paidAmount ?? 0;
-    const remaining = Math.max(0, (inv?.totalAmount ?? 0) - paid);
+  const onDownloadPdf = React.useCallback(
+    (id: string, invoiceNumber?: string | null) => {
+      if (!token) {
+        setError("Missing auth token. Please login again.");
+        return;
+      }
+      setPdfDownloadingId(id);
+      apiFetchBlob(`/invoices/${id}/pdf`, { token })
+        .then((blob) => {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          const safe =
+            invoiceNumber && String(invoiceNumber).trim()
+              ? String(invoiceNumber).replace(/[^\w.-]+/g, "_")
+              : `invoice-${id}`;
+          a.download = `${safe}.pdf`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          setTimeout(() => URL.revokeObjectURL(url), 30000);
+          success("Invoice PDF downloaded.");
+        })
+        .catch((err) => {
+          const msg = err instanceof Error ? err.message : "Failed to download invoice.";
+          toastError(msg);
+          setError(msg);
+        })
+        .finally(() => setPdfDownloadingId(null));
+    },
+    [token, success, toastError],
+  );
 
-    if (amt <= 0 || !Number.isFinite(amt)) {
-      setPaymentError("Payment amount must be a valid number > 0.");
-      return;
-    }
-    if (amt > remaining) {
-      setPaymentError(`Payment exceeds remaining amount (${formatCurrency(remaining)}).`);
-      return;
-    }
+  const addPayment = React.useCallback(
+    async (
+      invoiceId: string,
+      amt: number,
+      method: "cash" | "bank" | "upi",
+    ) => {
+      const inv = invoices?.find((invoice) => invoice._id === invoiceId);
+      const paid = inv?.paidAmount ?? 0;
+      const remaining = Math.max(0, (inv?.totalAmount ?? 0) - paid);
 
-    setPaymentSubmitting(true);
-    setPaymentError(null);
+      if (amt <= 0 || !Number.isFinite(amt)) {
+        setPaymentError("Payment amount must be a valid number > 0.");
+        return;
+      }
+      if (amt > remaining) {
+        setPaymentError(`Payment exceeds remaining amount (${formatCurrency(remaining)}).`);
+        return;
+      }
 
-    try {
-      await apiFetch<{ message?: string }>("/payments", {
-        method: "POST",
-        token,
-        body: JSON.stringify({ invoiceId, amount: amt, method }),
-      });
+      setPaymentSubmitting(true);
+      setPaymentError(null);
 
-      setPaymentInvoiceId(null);
-      setPaymentAmount("");
-      success("Payment recorded.");
-      await fetchInvoices();
-    } catch (err) {
-      console.error("Failed to add invoice payment:", err);
-      setPaymentError(
-        err instanceof Error ? err.message : "Failed to add payment.",
-      );
-    } finally {
-      setPaymentSubmitting(false);
-    }
-  }
+      try {
+        await apiFetch<{ message?: string }>("/payments", {
+          method: "POST",
+          token,
+          body: JSON.stringify({ invoiceId, amount: amt, method }),
+        });
 
-  function openPayment(invoiceId: string) {
-    const inv = invoices?.find((invoice) => invoice._id === invoiceId);
-    const paid = inv?.paidAmount ?? 0;
-    const remaining = Math.max(0, (inv?.totalAmount ?? 0) - paid);
+        setPaymentInvoiceId(null);
+        setPaymentAmount("");
+        success("Payment recorded.");
+        await fetchInvoices();
+      } catch (err) {
+        console.error("Failed to add invoice payment:", err);
+        setPaymentError(
+          err instanceof Error ? err.message : "Failed to add payment.",
+        );
+      } finally {
+        setPaymentSubmitting(false);
+      }
+    },
+    [token, invoices, fetchInvoices, success],
+  );
 
-    setPaymentInvoiceId(invoiceId);
-    setPaymentAmount(String(remaining > 0 ? remaining : ""));
-    setPaymentMethod("cash");
-    setPaymentError(null);
-  }
+  const openPayment = React.useCallback(
+    (invoiceId: string) => {
+      const inv = invoices?.find((invoice) => invoice._id === invoiceId);
+      const paid = inv?.paidAmount ?? 0;
+      const remaining = Math.max(0, (inv?.totalAmount ?? 0) - paid);
 
-  function markAsPaid(invoiceId: string) {
-    const inv = invoices?.find((invoice) => invoice._id === invoiceId);
-    const paid = inv?.paidAmount ?? 0;
-    const remaining = Math.max(0, (inv?.totalAmount ?? 0) - paid);
-    if (!remaining) return;
-    void addPayment(invoiceId, remaining, "cash");
-  }
+      setPaymentInvoiceId(invoiceId);
+      setPaymentAmount(String(remaining > 0 ? remaining : ""));
+      setPaymentMethod("cash");
+      setPaymentError(null);
+    },
+    [invoices],
+  );
+  const markAsPaid = React.useCallback(
+    (invoiceId: string) => {
+      const inv = invoices?.find((invoice) => invoice._id === invoiceId);
+      const paid = inv?.paidAmount ?? 0;
+      const remaining = Math.max(0, (inv?.totalAmount ?? 0) - paid);
+      if (!remaining) return;
+      void addPayment(invoiceId, remaining, "cash");
+    },
+    [invoices, addPayment],
+  );
+
+  const onGenerateEInvoice = React.useCallback(
+    async (id: string) => {
+      if (!token) {
+        setError("Missing auth token. Please login again.");
+        return;
+      }
+      setEinvoiceGeneratingId(id);
+      try {
+        await apiFetch(`/invoices/${id}/einvoice`, {
+          method: "POST",
+          token,
+        });
+        success("e-Invoice generated successfully.");
+        await fetchInvoices();
+      } catch (err) {
+        toastError(err instanceof Error ? err.message : "Failed to generate e-invoice.");
+      } finally {
+        setEinvoiceGeneratingId(null);
+      }
+    },
+    [token, success, toastError, fetchInvoices],
+  );
 
   const selectedInvoice =
     paymentInvoiceId && invoices
@@ -378,14 +428,62 @@ function InvoicesInner() {
           </Button>
         ),
       },
+      {
+        id: "einvoice",
+        header: "e-Invoice",
+        width: "140px",
+        cell: (inv) => {
+          const status = inv.einvoiceStatus || "none";
+          if (status === "generated") {
+            return (
+              <div className="flex flex-col gap-1">
+                <Badge variant="success">IRN Generated</Badge>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => setViewingQr({ irn: inv.irn!, qrCode: inv.qrCode! })}
+                >
+                  View QR
+                </Button>
+              </div>
+            );
+          }
+          if (status === "failed") {
+            return (
+              <div className="flex flex-col gap-1">
+                <span title={inv.einvoiceError ?? "E-invoice failed"}>
+                  <Badge variant="danger">Failed</Badge>
+                </span>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => onGenerateEInvoice(inv._id)}
+                  disabled={einvoiceGeneratingId === inv._id}
+                >
+                  {einvoiceGeneratingId === inv._id ? <InlineSpinner /> : "Retry"}
+                </Button>
+              </div>
+            );
+          }
+          return (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => onGenerateEInvoice(inv._id)}
+              disabled={einvoiceGeneratingId === inv._id}
+            >
+              {einvoiceGeneratingId === inv._id ? <InlineSpinner /> : "Generate IRN"}
+            </Button>
+          );
+        },
+      },
     ];
-  }, [canAddPayment, pdfDownloadingId]);
+  }, [canAddPayment, pdfDownloadingId, einvoiceGeneratingId, onDownloadPdf, markAsPaid, openPayment]);
 
   React.useEffect(() => {
     void fetchInvoices();
     void fetchCustomers();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [fetchInvoices, fetchCustomers]);
 
   function clearFieldErrors() {
     setFieldErrors({});
@@ -435,6 +533,7 @@ function InvoicesInner() {
           gstRate: parsedGst,
           revenueType,
           ...(deferred && { isDeferred: true, deferredMonths: months }),
+          ...(useLocalizationEngine ? dynamicValues : {}),
         }),
       });
 
@@ -570,6 +669,29 @@ function InvoicesInner() {
                 </div>
               </div>
             </div>
+
+            {useLocalizationEngine && dynamicFields.length > 0 ? (
+              <div className="rounded-xl bg-slate-50/80 p-4 ring-1 ring-inset ring-slate-100 sm:col-span-2">
+                <div className="text-xs font-bold uppercase tracking-wide text-slate-500">Localization</div>
+                <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                  {dynamicFields.map(f => (
+                    <div className="grid gap-1" key={f.id}>
+                      <span className="text-sm font-semibold text-slate-700">
+                        {f.label} {f.required && <span className="text-red-500">*</span>}
+                      </span>
+                      <input
+                        type={f.type}
+                        placeholder={f.placeholder}
+                        value={dynamicValues[f.id] || ""}
+                        onChange={(e) => setDynamicValues(s => ({ ...s, [f.id]: e.target.value }))}
+                        required={f.required}
+                        className={inputClassName}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
 
             <div className="grid gap-1">
               <span className="text-sm font-semibold text-slate-700">Revenue type</span>
@@ -802,6 +924,39 @@ function InvoicesInner() {
               </label>
             </form>
           </>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={Boolean(viewingQr)}
+        title="e-Invoice Details"
+        onClose={() => setViewingQr(null)}
+        size="md"
+      >
+        {viewingQr ? (
+          <div className="flex flex-col items-center gap-6 py-4">
+            <div className="text-center">
+              <div className="text-sm font-bold uppercase tracking-wider text-slate-500">IRN Number</div>
+              <div className="mt-1 break-all font-mono text-sm font-semibold text-slate-900">{viewingQr.irn}</div>
+            </div>
+
+            <div className="rounded-2xl bg-white p-4 shadow-soft ring-1 ring-slate-200">
+              <div className="flex h-48 w-48 items-center justify-center bg-slate-50">
+                <div className="text-center text-xs text-slate-400">
+                  <div className="mx-auto h-12 w-12 border-2 border-dashed border-slate-300"></div>
+                  <div className="mt-2">[GSTN Signed QR Code]</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="text-center text-xs text-slate-500">
+              This QR code contains the digital signature of the IRP.
+            </div>
+
+            <Button variant="secondary" onClick={() => setViewingQr(null)}>
+              Close
+            </Button>
+          </div>
         ) : null}
       </Modal>
     </Container>

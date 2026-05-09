@@ -8,6 +8,7 @@ const BankAccount = require("../models/BankAccount");
 const BankTransaction = require("../models/BankTransaction");
 const Account = require("../models/Account");
 const { buildAccountMap, resolveFilter, round } = require("../controllers/reportController");
+const LocalizationRegistry = require("../localization/registry/LocalizationRegistry");
 const { createVoucher } = require("./voucherService");
 
 /** Rupee tolerance */
@@ -200,7 +201,7 @@ async function createBalanceSheetPlugIfNeeded(financialYearId) {
       else otherAssets += row.balance;
     }
     if (row.type === "liability") {
-      if (row.account === "GST Payable") gstPayable = -row.balance;
+      if (row.account === LocalizationRegistry.getTaxLiabilityAccount()) gstPayable = -row.balance;
       else otherLiabilities += -row.balance;
     }
     if (row.type === "equity") retainedEarnings += -row.balance;

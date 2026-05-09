@@ -4,7 +4,7 @@ import { Link, Navigate, useNavigate } from "react-router-dom";
 import { apiFetch } from "@/api";
 import { Button } from "@/components/ui/Button";
 import { Container } from "@/components/ui/Container";
-import { getStoredRole } from "@/components/RoleProtectedRoute";
+import { getStoredRole } from "@/utils/roleAuth";
 
 export function Login() {
   const token =
@@ -112,7 +112,7 @@ export function Login() {
           )}
 
           <p className="mt-3 text-center text-sm font-semibold text-slate-600">
-            Don't have an account?{" "}
+            Don&apos;t have an account?{" "}
             <Link to="/signup" className="text-primary hover:underline">
               Sign up
             </Link>

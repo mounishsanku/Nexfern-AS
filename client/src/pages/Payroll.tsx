@@ -5,11 +5,12 @@ import { Container } from "@/components/ui/Container";
 import { Card } from "@/components/ui/Card";
 import { ErrorMessage } from "@/components/ui/ErrorMessage";
 import { EmptyState } from "@/components/ui/EmptyState";
-import { VirtualizedTable, type VirtualTableColumn } from "@/components/VirtualizedTable";
-import { inputClassName } from "@/components/ui/Input";
+import { VirtualizedTable } from "@/components/VirtualizedTable";
+import type { VirtualTableColumn } from "@/types/virtualizedTable";
+import { inputClassName } from "@/constants/inputStyles";
 import { InlineSpinner } from "@/components/ui/Spinner";
 import { formatCurrency } from "@/lib/format";
-import { useToast } from "@/context/ToastContext";
+import { useToast } from "@/context/useToast";
 import { useFirstFieldFocus, createFormEnterSubmitHandler } from "@/hooks/useFormEnhancements";
 import { jsPDF } from "jspdf";
 

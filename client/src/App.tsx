@@ -4,7 +4,8 @@ import { Layout } from "@/app/Layout";
 import { Login } from "@/pages/Login";
 import { Signup } from "@/pages/Signup";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
-import { RoleProtectedRoute, getStoredRole } from "@/components/RoleProtectedRoute";
+import { RoleProtectedRoute } from "@/components/RoleProtectedRoute";
+import { getStoredRole } from "@/utils/roleAuth";
 import { PageSkeleton } from "@/components/ui/Skeleton";
 
 const Dashboard = lazy(() => import("@/pages/Dashboard").then((m) => ({ default: m.Dashboard })));
@@ -28,6 +29,20 @@ const SystemDiagnostics = lazy(() =>
 );
 const Vouchers = lazy(() => import("@/pages/Vouchers").then((m) => ({ default: m.Vouchers })));
 
+// Admin Localization & Settings Routes
+const EntitySettings = lazy(() => import("@/pages/EntitySettings").then((m) => ({ default: m.EntitySettings })));
+const LocalizationSettings = lazy(() => import("@/pages/LocalizationSettings").then((m) => ({ default: m.LocalizationSettings })));
+const CurrencyManagement = lazy(() => import("@/pages/CurrencyManagement").then((m) => ({ default: m.CurrencyManagement })));
+const TaxProfiles = lazy(() => import("@/pages/TaxProfiles").then((m) => ({ default: m.TaxProfiles })));
+const ImportCenter = lazy(() => import("@/pages/ImportCenter").then((m) => ({ default: m.ImportCenter })));
+const SecuritySettings = lazy(() => import("@/pages/SecuritySettings").then((m) => ({ default: m.SecuritySettings })));
+const Integrations = lazy(() => import("@/pages/Integrations").then((m) => ({ default: m.Integrations })));
+const ReconciliationWorkspace = lazy(() => import("@/pages/ReconciliationWorkspace").then((m) => ({ default: m.ReconciliationWorkspace })));
+const AnalyticsDashboard = lazy(() => import("@/pages/AnalyticsDashboard").then((m) => ({ default: m.AnalyticsDashboard })));
+const SystemOperations = lazy(() => import("@/pages/SystemOperations").then((m) => ({ default: m.SystemOperations })));
+const HelpCenter = lazy(() => import("@/pages/HelpCenter").then((m) => ({ default: m.HelpCenter })));
+const GstReconciliation = lazy(() => import("@/pages/GstReconciliation").then((m) => ({ default: m.GstReconciliation })));
+
 function defaultPath() {
   const role = getStoredRole();
   if (role === "admin") return "/dashboard";
@@ -35,12 +50,15 @@ function defaultPath() {
   return "/invoices";
 }
 
+import { LocalizationProvider } from "@/context/LocalizationContext";
+
 export default function App() {
   const token =
     typeof window !== "undefined" ? window.localStorage.getItem("token") : null;
 
   return (
-    <BrowserRouter>
+    <LocalizationProvider>
+      <BrowserRouter>
       <Suspense fallback={<PageSkeleton />}>
         <Routes>
           <Route element={<Layout />}>
@@ -154,6 +172,103 @@ export default function App() {
                   </RoleProtectedRoute>
                 }
               />
+              {/* Admin Localization & Config Routes */}
+              <Route
+                path="/settings/entities"
+                element={
+                  <RoleProtectedRoute allowedRoles={["admin"]}>
+                    <EntitySettings />
+                  </RoleProtectedRoute>
+                }
+              />
+              <Route
+                path="/settings/localization"
+                element={
+                  <RoleProtectedRoute allowedRoles={["admin"]}>
+                    <LocalizationSettings />
+                  </RoleProtectedRoute>
+                }
+              />
+              <Route
+                path="/settings/currencies"
+                element={
+                  <RoleProtectedRoute allowedRoles={["admin"]}>
+                    <CurrencyManagement />
+                  </RoleProtectedRoute>
+                }
+              />
+              <Route
+                path="/settings/tax-profiles"
+                element={
+                  <RoleProtectedRoute allowedRoles={["admin"]}>
+                    <TaxProfiles />
+                  </RoleProtectedRoute>
+                }
+              />
+              <Route
+                path="/settings/import"
+                element={
+                  <RoleProtectedRoute allowedRoles={["admin", "accountant"]}>
+                    <ImportCenter />
+                  </RoleProtectedRoute>
+                }
+              />
+              <Route
+                path="/settings/security"
+                element={
+                  <RoleProtectedRoute allowedRoles={["admin"]}>
+                    <SecuritySettings />
+                  </RoleProtectedRoute>
+                }
+              />
+              <Route
+                path="/settings/integrations"
+                element={
+                  <RoleProtectedRoute allowedRoles={["admin"]}>
+                    <Integrations />
+                  </RoleProtectedRoute>
+                }
+              />
+              <Route
+                path="/reconciliation"
+                element={
+                  <RoleProtectedRoute allowedRoles={["admin", "accountant"]}>
+                    <ReconciliationWorkspace />
+                  </RoleProtectedRoute>
+                }
+              />
+              <Route
+                path="/gst-reconciliation"
+                element={
+                  <RoleProtectedRoute allowedRoles={["admin", "accountant", "auditor"]}>
+                    <GstReconciliation />
+                  </RoleProtectedRoute>
+                }
+              />
+              <Route
+                path="/analytics"
+                element={
+                  <RoleProtectedRoute allowedRoles={["admin", "accountant"]}>
+                    <AnalyticsDashboard />
+                  </RoleProtectedRoute>
+                }
+              />
+              <Route
+                path="/ops"
+                element={
+                  <RoleProtectedRoute allowedRoles={["admin"]}>
+                    <SystemOperations />
+                  </RoleProtectedRoute>
+                }
+              />
+              <Route
+                path="/help"
+                element={
+                  <RoleProtectedRoute allowedRoles={["admin", "accountant"]}>
+                    <HelpCenter />
+                  </RoleProtectedRoute>
+                }
+              />
             </Route>
 
             <Route path="*" element={<Navigate to="/login" replace />} />
@@ -161,5 +276,6 @@ export default function App() {
         </Routes>
       </Suspense>
     </BrowserRouter>
+    </LocalizationProvider>
   );
 }

@@ -14,6 +14,7 @@ const {
   resolveFilter,
   round,
 } = require("../controllers/reportController");
+const LocalizationRegistry = require("../localization/registry/LocalizationRegistry");
 
 function mkIssue(module, type, severity, description, fixApplied = false, extra = {}) {
   return { module, type, severity, description, fixApplied, ...extra };
@@ -39,7 +40,7 @@ function balanceSheetFromMap(map) {
       else otherAssets += row.balance;
     }
     if (row.type === "liability") {
-      if (row.account === "GST Payable") gstPayable = -row.balance;
+      if (row.account === LocalizationRegistry.getTaxLiabilityAccount()) gstPayable = -row.balance;
       else otherLiabilities += -row.balance;
     }
     if (row.type === "equity") {

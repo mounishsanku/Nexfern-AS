@@ -1,4 +1,6 @@
 require("dotenv").config();
+const { validateEnv } = require("./config/envValidation");
+try { validateEnv(); } catch (e) { process.stderr.write(e.message + "\n"); process.exit(1); }
 
 const express = require("express");
 const cors = require("cors");
@@ -21,6 +23,7 @@ const voucherRoutes = require("./routes/voucherRoutes");
 const { requireActiveYear, guardClosedYear } = require("./middleware/financialYearMiddleware");
 const { requireAccountingHealth } = require("./middleware/accountingIntegrityMiddleware");
 const { requestLogger } = require("./middleware/requestLogger");
+const accessLoggingMiddleware = require("./middleware/accessLoggingMiddleware");
 const accountRoutes = require("./routes/accountRoutes");
 const openingBalanceRoutes = require("./routes/openingBalanceRoutes");
 const vendorRoutes = require("./routes/vendorRoutes");
@@ -30,6 +33,11 @@ const payrollRoutes = require("./routes/payrollRoutes");
 const revenueSourceRoutes = require("./routes/revenueSourceRoutes");
 const eventRoutes = require("./routes/eventRoutes");
 const systemDiagnosticsRoutes = require("./routes/systemDiagnosticsRoutes");
+const localizationAdminRoutes = require("./routes/localizationAdminRoutes");
+const importRoutes = require("./routes/importRoutes");
+const reconciliationRoutes = require("./routes/reconciliationRoutes");
+const analyticsRoutes = require("./routes/analyticsRoutes");
+const gstRoutes = require("./routes/gstRoutes");
 const { seedDefaultAccounts } = require("./controllers/accountController");
 const { migrateVoucherEntries, migrateVoucherFinancialYear } = require("./migrations/migrateVoucherEntries");
 const { migrateInvoiceNumbers } = require("./migrations/migrateInvoiceNumbers");
@@ -37,6 +45,13 @@ const { warmCache } = require("./services/accountService");
 const { seedActiveYear } = require("./controllers/financialYearController");
 const { runFullSystemDiagnostics } = require("./services/systemHealService");
 const { sendStructuredError, ACTION } = require("./utils/httpErrorResponse");
+const logger = require("./utils/logger");
+const healthRoutes = require("./routes/healthRoutes");
+const { markStartupComplete } = require("./routes/healthRoutes");
+const { httpLatencyMiddleware } = require("./services/monitoringService");
+const { authRateLimit, webhookRateLimit, importRateLimit, analyticsRateLimit } = require("./middleware/rateLimitMiddleware");
+const { startBackgroundJobs } = require("./jobs/backgroundJobs");
+const metricsRoutes = require("./routes/metricsRoutes");
 
 const app = express();
 
@@ -50,40 +65,50 @@ app.use(
   })
 );
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "32mb" }));
+app.use(httpLatencyMiddleware);
 app.use(requestLogger);
+app.use(accessLoggingMiddleware);
 app.use(requireAccountingHealth);
 app.use("/uploads", express.static(require("path").join(__dirname, "../uploads")));
 
-app.get("/health", (_req, res) => res.json({ ok: true }));
+// ── Health endpoints (no auth — load balancers + k8s call these) ──────────────
+app.use("/health", healthRoutes);
+// Legacy health shim
 app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
 
 app.use("/api", testRoutes);
-app.use("/api/auth", authRoutes);
-app.use("/api/invoices",       requireActiveYear, guardClosedYear, invoiceRoutes);
-app.use("/api/expenses",       requireActiveYear, guardClosedYear, expenseRoutes);
-app.use("/api/payments",       requireActiveYear, guardClosedYear, paymentRoutes);
-app.use("/api/dashboard",      requireActiveYear, guardClosedYear, dashboardRoutes);
-app.use("/api/reports",        requireActiveYear, guardClosedYear, reportsRoutes);
-app.use("/api/customers",      requireActiveYear, guardClosedYear, customerRoutes);
-app.use("/api/trial-balance",  requireActiveYear, guardClosedYear, trialBalanceRoutes);
-app.use("/api/bank",           requireActiveYear, guardClosedYear, bankRoutes);
-app.use("/api/bank",           requireActiveYear, guardClosedYear, bankReconciliation);
-app.use("/api/audit",          requireActiveYear, guardClosedYear, auditRoutes);
+app.use("/api/auth", authRateLimit, authRoutes);
+app.use("/api/invoices", requireActiveYear, guardClosedYear, invoiceRoutes);
+app.use("/api/expenses", requireActiveYear, guardClosedYear, expenseRoutes);
+app.use("/api/payments", requireActiveYear, guardClosedYear, paymentRoutes);
+app.use("/api/dashboard", requireActiveYear, guardClosedYear, dashboardRoutes);
+app.use("/api/reports", requireActiveYear, guardClosedYear, reportsRoutes);
+app.use("/api/customers", requireActiveYear, guardClosedYear, customerRoutes);
+app.use("/api/trial-balance", requireActiveYear, guardClosedYear, trialBalanceRoutes);
+app.use("/api/bank", requireActiveYear, guardClosedYear, bankRoutes);
+app.use("/api/bank", requireActiveYear, guardClosedYear, bankReconciliation);
+app.use("/api/audit", requireActiveYear, guardClosedYear, auditRoutes);
 app.use("/api/financial-year", requireActiveYear, guardClosedYear, financialYearRoutes);
-app.use("/api/vouchers",       requireActiveYear, guardClosedYear, voucherRoutes);
-app.use("/api/accounts",          requireActiveYear, guardClosedYear, accountRoutes);
-app.use("/api/opening-balances",  requireActiveYear, guardClosedYear, openingBalanceRoutes);
-app.use("/api/vendors",           requireActiveYear, guardClosedYear, vendorRoutes);
-app.use("/api/revenue",           requireActiveYear, guardClosedYear, revenueRoutes);
-app.use("/api/tds",               requireActiveYear, guardClosedYear, tdsRoutes);
-app.use("/api/payroll",           requireActiveYear, guardClosedYear, payrollRoutes);
-app.use("/api/revenue-sources",   requireActiveYear, guardClosedYear, revenueSourceRoutes);
-app.use("/api/events",            requireActiveYear, guardClosedYear, eventRoutes);
-app.use("/api/system",            requireActiveYear, systemDiagnosticsRoutes);
+app.use("/api/vouchers", requireActiveYear, guardClosedYear, voucherRoutes);
+app.use("/api/accounts", requireActiveYear, guardClosedYear, accountRoutes);
+app.use("/api/opening-balances", requireActiveYear, guardClosedYear, openingBalanceRoutes);
+app.use("/api/vendors", requireActiveYear, guardClosedYear, vendorRoutes);
+app.use("/api/revenue", requireActiveYear, guardClosedYear, revenueRoutes);
+app.use("/api/tds", requireActiveYear, guardClosedYear, tdsRoutes);
+app.use("/api/payroll", requireActiveYear, guardClosedYear, payrollRoutes);
+app.use("/api/revenue-sources", requireActiveYear, guardClosedYear, revenueSourceRoutes);
+app.use("/api/events", requireActiveYear, guardClosedYear, eventRoutes);
+app.use("/api/system", requireActiveYear, systemDiagnosticsRoutes);
+app.use("/api/localization-admin", localizationAdminRoutes);
+app.use("/api/import", requireActiveYear, guardClosedYear, importRateLimit, importRoutes);
+app.use("/api/reconciliation", requireActiveYear, reconciliationRoutes);
+app.use("/api/analytics", requireActiveYear, analyticsRateLimit, analyticsRoutes);
+app.use("/api/gst", requireActiveYear, guardClosedYear, gstRoutes);
+app.use("/api/metrics", metricsRoutes);
 
 // Global error handler — must be last (never expose stack traces)
 app.use((err, _req, res, _next) => {
-  console.error("Unhandled error:", err);
+  logger.error("Unhandled error", { code: err?.code, message: err?.message });
   if (res.headersSent) return;
   if (err?.code === "INSUFFICIENT_FUNDS") {
     return sendStructuredError(res, {
@@ -197,50 +222,86 @@ const PORT = process.env.PORT || 5000;
 
 async function start() {
   try {
+    // 1. Strictly enforce DB connection first
     await connectDb();
+
+    // 2. Run initialization scripts only AFTER successful connection
     await seedDefaultAccounts();
-    await seedActiveYear();           // auto-create current FY if none exists
-    await migrateVoucherEntries();    // backfill VoucherEntry.accountId
-    await migrateVoucherFinancialYear(); // backfill Voucher.financialYearId
+    await seedActiveYear();
+    await migrateVoucherEntries();
+    await migrateVoucherFinancialYear();
     await migrateInvoiceNumbers();
     await warmCache();
+
+    // 3. System Diagnostics (background jobs replace inline setInterval)
     try {
       const report = await runFullSystemDiagnostics({ reason: "startup" });
-      // eslint-disable-next-line no-console
-      console.log(
-        "[Startup diagnostic]",
-        JSON.stringify({
-          issuesFound: report.issuesFound,
-          issuesFixed: report.issuesFixed,
-          systemStatus: report.systemStatus,
-          remainingCount: report.remainingIssues?.length ?? 0,
-        }),
-      );
+      logger.info("startup diagnostic", {
+        issuesFound: report.issuesFound,
+        issuesFixed: report.issuesFixed,
+        systemStatus: report.systemStatus,
+        remainingCount: report.remainingIssues?.length ?? 0,
+      });
     } catch (healErr) {
-      console.warn("Startup full diagnostic failed:", healErr?.message ?? healErr);
+      logger.warn("Startup full diagnostic failed", { error: healErr?.message });
     }
 
-    const DIAG_INTERVAL_MS = 5 * 60 * 1000;
-    setInterval(async () => {
-      try {
-        await runFullSystemDiagnostics({ reason: "interval", silent: true, quick: true });
-      } catch (e) {
-        console.warn("Scheduled diagnostic failed:", e?.message ?? e);
-      }
-    }, DIAG_INTERVAL_MS);
-  } catch (err) {
-    console.warn(
-      "MongoDB not connected (set MONGODB_URI to enable):",
-      err?.message ?? err
-    );
-  }
+    // 4. Start all background jobs (replaces the inline setInterval)
+    startBackgroundJobs();
 
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-  });
+    // 5. Start server — only after all initialization succeeded
+    const server = app.listen(PORT, () => {
+      logger.info(`Server running on port ${PORT}`, { port: PORT, env: process.env.NODE_ENV || "development" });
+      markStartupComplete();
+    });
+
+    // ── Graceful shutdown ─────────────────────────────────────────────────────
+    // On SIGTERM/SIGINT: stop accepting new connections, wait for in-flight
+    // requests to complete (up to 10 s), then close DB and exit cleanly.
+    let isShuttingDown = false;
+
+    async function shutdown(signal) {
+      if (isShuttingDown) return;
+      isShuttingDown = true;
+      logger.info(`graceful shutdown initiated`, { signal });
+
+      // Stop accepting new TCP connections immediately
+      server.close(async () => {
+        try {
+          await mongoose.connection.close();
+          logger.info("graceful shutdown complete", { signal });
+          process.exit(0);
+        } catch (err) {
+          logger.error("graceful shutdown: DB close failed", { error: err?.message });
+          process.exit(1);
+        }
+      });
+
+      // Force-kill if drain takes longer than 10 seconds
+      setTimeout(() => {
+        logger.error("graceful shutdown: timeout exceeded, forcing exit");
+        process.exit(1);
+      }, 10_000).unref();
+    }
+
+    process.on("SIGTERM", () => shutdown("SIGTERM"));
+    process.on("SIGINT",  () => shutdown("SIGINT"));
+
+    // Catch unhandled promise rejections — log and exit so the process
+    // manager (PM2/k8s) can restart cleanly rather than running in a degraded state.
+    process.on("unhandledRejection", (reason) => {
+      logger.error("unhandledRejection", { reason: String(reason) });
+      shutdown("unhandledRejection");
+    });
+
+  } catch (err) {
+    logger.error("CRITICAL: Startup sequence failed. Shutting down.", { error: err?.message });
+    process.exit(1);
+  }
 }
 
-start().catch((err) => {
-  console.error("Failed to start server:", err);
-  process.exit(1);
-});
+if (require.main === module && process.env.NODE_ENV !== "test") {
+  start();
+}
+
+module.exports = app;

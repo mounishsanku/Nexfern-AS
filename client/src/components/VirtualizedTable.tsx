@@ -3,53 +3,8 @@ import { List, type RowComponentProps } from "react-window";
 import type { CSSProperties } from "react";
 import { TableWrap, Table, THead, Th, TBody, Td } from "@/components/ui/Table";
 import { useContainerWidth } from "@/hooks/useContainerWidth";
-
-function cx(...parts: Array<string | undefined | false>) {
-  return parts.filter(Boolean).join(" ");
-}
-
-export type VirtualTableColumn<T> = {
-  id: string;
-  header: React.ReactNode;
-  cell: (row: T, rowIndex: number) => React.ReactNode;
-  align?: "left" | "right" | "center";
-  width?: string;
-  hideBelowMd?: boolean;
-  hideBelowLg?: boolean;
-};
-
-export type VirtualizedTableProps<T extends object> = {
-  rows: T[];
-  columns: VirtualTableColumn<T>[];
-  rowKey: (row: T, index: number) => string;
-  threshold?: number;
-  rowHeight?: number;
-  maxHeight?: number;
-  minTableWidth?: number;
-  className?: string;
-  zebra?: boolean;
-};
-
-function alignClass(a: "left" | "right" | "center" | undefined): string {
-  if (a === "right") return "text-right";
-  if (a === "center") return "text-center";
-  return "text-left";
-}
-
-function cellHideClass(c: VirtualTableColumn<unknown>): string {
-  if (c.hideBelowLg) return "hidden lg:table-cell";
-  if (c.hideBelowMd) return "hidden md:table-cell";
-  return "";
-}
-
-/** Extra props passed to react-window List rowComponent */
-export type VirtualTableRowProps<T> = {
-  rows: T[];
-  columns: VirtualTableColumn<T>[];
-  rowKey: (row: T, index: number) => string;
-  gridTemplate: string;
-  zebra: boolean;
-};
+import type { VirtualTableColumn, VirtualizedTableProps, VirtualTableRowProps } from "@/types/virtualizedTable";
+import { alignClass, cellHideClass, cx } from "@/utils/virtualizedTableHelpers";
 
 function VirtualListRow<T extends object>({
   ariaAttributes,
@@ -120,6 +75,13 @@ function VirtualizedTableInner<T extends object>({
     [rows, columns, rowKey, gridTemplate, zebra],
   );
 
+  const RowComponent = React.useCallback(
+    (props: RowComponentProps<VirtualTableRowProps<T>>) => (
+      <VirtualListRow<T> {...props} />
+    ),
+    [],
+  );
+
   if (rows.length === 0) return null;
 
   if (!useVirtual) {
@@ -172,13 +134,6 @@ function VirtualizedTableInner<T extends object>({
   }
 
   const listW = width > 0 ? width : minTableWidth;
-
-  const RowComponent = React.useCallback(
-    (props: RowComponentProps<VirtualTableRowProps<T>>) => (
-      <VirtualListRow<T> {...props} />
-    ),
-    [],
-  );
 
   return (
     <div

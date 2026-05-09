@@ -52,7 +52,7 @@ export function Vouchers() {
   const [error, setError] = React.useState<string | null>(null);
   const [reversingId, setReversingId] = React.useState<string | null>(null);
 
-  async function load() {
+  const load = React.useCallback(async () => {
     if (!token) {
       setError("Missing auth token.");
       return;
@@ -67,11 +67,11 @@ export function Vouchers() {
     } finally {
       setLoading(false);
     }
-  }
+  }, [token]);
 
   React.useEffect(() => {
     void load();
-  }, [token]);
+  }, [load]);
 
   async function handleReverse(v: VoucherRow) {
     if (!token || !isAdmin) return;
